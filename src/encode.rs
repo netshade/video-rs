@@ -295,7 +295,7 @@ impl Encoder {
             encoder.format(),
             destination_width,
             destination_height,
-            AvScalerFlags::empty(),
+            AvScalerFlags::FAST_BILINEAR,
         )?;
 
         Ok(Self {

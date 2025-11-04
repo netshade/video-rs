@@ -53,6 +53,12 @@ struct Args {
 
     #[arg(long, default_value_t = 720)]
     height: usize,
+
+    #[arg(long)]
+    resized_width: Option<usize>,
+
+    #[arg(long)]
+    resized_height: Option<usize>,
 }
 
 impl Args {
@@ -73,10 +79,18 @@ impl Args {
     }
 
     fn settings(&self) -> Settings {
-        if let Some(codec) = &self.codec {
+        let settings = if let Some(codec) = &self.codec {
             codec.settings(self.width, self.height)
         } else {
             self.detected_codec().settings(self.width, self.height)
+        };
+        if self.resized_width.is_some() || self.resized_height.is_some() {
+            settings.resized_to(
+                self.resized_width.unwrap_or(self.width),
+                self.resized_height.unwrap_or(self.height),
+            )
+        } else {
+            settings
         }
     }
 }

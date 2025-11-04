@@ -127,8 +127,8 @@ pub struct Encoder {
     keyframe_interval: u64,
     interleaved: bool,
     scaler: AvScaler,
-    scaler_width: u32,
-    scaler_height: u32,
+    source_width: u32,
+    source_height: u32,
     frame_count: u64,
     have_written_header: bool,
     have_written_trailer: bool,
@@ -154,8 +154,8 @@ impl Encoder {
     #[cfg(feature = "ndarray")]
     pub fn encode(&mut self, frame: &Frame, source_timestamp: Time) -> Result<()> {
         let (height, width, channels) = frame.dim();
-        if height != self.scaler_height as usize
-            || width != self.scaler_width as usize
+        if height != self.source_height as usize
+            || width != self.source_width as usize
             || channels != 3
         {
             return Err(Error::InvalidFrameFormat);
@@ -178,8 +178,8 @@ impl Encoder {
     ///
     /// * `frame` - Frame to encode.
     pub fn encode_raw(&mut self, frame: RawFrame) -> Result<()> {
-        if frame.width() != self.scaler_width
-            || frame.height() != self.scaler_height
+        if frame.width() != self.source_width
+            || frame.height() != self.source_height
             || frame.format() != FRAME_PIXEL_FORMAT
         {
             return Err(Error::InvalidFrameFormat);
@@ -194,7 +194,7 @@ impl Encoder {
         // Reformat frame to target pixel format.
         let mut frame = self.scale(frame)?;
         // Producer key frame every once in a while
-        if self.frame_count % self.keyframe_interval == 0 {
+        if self.frame_count.is_multiple_of(self.keyframe_interval) {
             frame.set_kind(AvFrameType::I);
         }
 
@@ -250,7 +250,13 @@ impl Encoder {
 
         let mut writer_stream = writer.output.add_stream(settings.codec)?;
         let writer_stream_index = writer_stream.index();
-
+        let Settings {
+            source_width,
+            source_height,
+            destination_width,
+            destination_height,
+            ..
+        } = settings;
         let mut encoder_context = match settings.codec {
             Some(codec) => ffi::codec_context_as(&codec)?,
             None => AvContext::new(),
@@ -282,15 +288,13 @@ impl Encoder {
 
         writer_stream.set_parameters(&encoder);
 
-        let scaler_width = encoder.width();
-        let scaler_height = encoder.height();
         let scaler = AvScaler::get(
             FRAME_PIXEL_FORMAT,
-            scaler_width,
-            scaler_height,
+            source_width,
+            source_height,
             encoder.format(),
-            scaler_width,
-            scaler_height,
+            destination_width,
+            destination_height,
             AvScalerFlags::empty(),
         )?;
 
@@ -302,8 +306,8 @@ impl Encoder {
             keyframe_interval: settings.keyframe_interval,
             interleaved,
             scaler,
-            scaler_width,
-            scaler_height,
+            source_width,
+            source_height,
             frame_count: 0,
             have_written_header: false,
             have_written_trailer: false,
@@ -397,8 +401,10 @@ impl Drop for Encoder {
 /// Holds a logical combination of encoder settings.
 #[derive(Clone)]
 pub struct Settings {
-    width: u32,
-    height: u32,
+    source_width: u32,
+    source_height: u32,
+    destination_width: u32,
+    destination_height: u32,
     pixel_format: AvPixel,
     codec: Option<AvCodec>,
     keyframe_interval: u64,
@@ -413,8 +419,10 @@ impl std::fmt::Debug for Settings {
             "None"
         };
         f.debug_struct("Settings")
-            .field("width", &self.width)
-            .field("height", &self.height)
+            .field("source_width", &self.source_width)
+            .field("source_height", &self.source_height)
+            .field("destination_width", &self.destination_width)
+            .field("destination_height", &self.destination_height)
             .field("pixel_format", &self.pixel_format)
             .field("codec", &codec_name)
             .field("keyframe_interval", &self.keyframe_interval)
@@ -453,6 +461,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            width,
+            height,
             AvPixel::YUV420P,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
             options,
@@ -483,6 +493,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            width,
+            height,
             pixel_format,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
             options,
@@ -495,6 +507,8 @@ impl Settings {
     #[cfg(feature = "vp9")]
     pub fn preset_vp9_yuv420p(width: usize, height: usize, options: Option<Options>) -> Settings {
         Self::new(
+            width,
+            height,
             width,
             height,
             AvPixel::YUV420P,
@@ -519,6 +533,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            width,
+            height,
             AvPixel::YUV420P,
             Self::find_codec(AvCodecId::VP9, Some("libvpx-vp9")),
             opts,
@@ -526,15 +542,19 @@ impl Settings {
     }
 
     pub fn new(
-        width: usize,
-        height: usize,
+        source_width: usize,
+        source_height: usize,
+        destination_width: usize,
+        destination_height: usize,
         pixel_format: AvPixel,
         codec: Option<AvCodec>,
         options: Options,
     ) -> Settings {
         Self {
-            width: width as u32,
-            height: height as u32,
+            source_width: source_width as u32,
+            source_height: source_height as u32,
+            destination_width: destination_width as u32,
+            destination_height: destination_height as u32,
             pixel_format,
             keyframe_interval: Self::KEY_FRAME_INTERVAL,
             codec,
@@ -553,6 +573,12 @@ impl Settings {
         self
     }
 
+    pub fn resized_to(mut self, destination_width: usize, destination_height: usize) -> Self {
+        self.destination_width = destination_width as u32;
+        self.destination_height = destination_height as u32;
+        self
+    }
+
     /// Apply the settings to an encoder.
     ///
     /// # Arguments
@@ -563,8 +589,8 @@ impl Settings {
     ///
     /// New encoder with settings applied.
     fn apply_to(&self, encoder: &mut AvVideo) {
-        encoder.set_width(self.width);
-        encoder.set_height(self.height);
+        encoder.set_width(self.destination_width);
+        encoder.set_height(self.destination_height);
         encoder.set_format(self.pixel_format);
         encoder.set_frame_rate(Some((Self::FRAME_RATE, 1)));
     }

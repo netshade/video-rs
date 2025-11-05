@@ -129,6 +129,7 @@ pub struct Encoder {
     scaler: AvScaler,
     source_width: u32,
     source_height: u32,
+    source_format: PixelFormat,
     frame_count: u64,
     have_written_header: bool,
     have_written_trailer: bool,
@@ -161,7 +162,8 @@ impl Encoder {
             return Err(Error::InvalidFrameFormat);
         }
 
-        let mut frame = ffi::convert_ndarray_to_frame_rgb24(frame).map_err(Error::BackendError)?;
+        let mut frame = ffi::convert_ndarray_to_frame(frame, self.source_format.into())
+            .map_err(Error::BackendError)?;
 
         frame.set_pts(
             source_timestamp
@@ -180,7 +182,7 @@ impl Encoder {
     pub fn encode_raw(&mut self, frame: RawFrame) -> Result<()> {
         if frame.width() != self.source_width
             || frame.height() != self.source_height
-            || frame.format() != FRAME_PIXEL_FORMAT
+            || frame.format() != self.source_format
         {
             return Err(Error::InvalidFrameFormat);
         }
@@ -311,6 +313,7 @@ impl Encoder {
             scaler,
             source_width,
             source_height,
+            source_format: settings.source_format,
             frame_count: 0,
             have_written_header: false,
             have_written_trailer: false,

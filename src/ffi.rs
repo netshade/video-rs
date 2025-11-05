@@ -270,7 +270,10 @@ pub type FrameArray = Array3<u8>;
 ///
 /// An ffmpeg-native `AvFrame`.
 #[cfg(feature = "ndarray")]
-pub fn convert_ndarray_to_frame_rgb24(frame_array: &FrameArray) -> Result<Frame, Error> {
+pub fn convert_ndarray_to_frame(
+    frame_array: &FrameArray,
+    pixel_format: AVPixelFormat,
+) -> Result<Frame, Error> {
     unsafe {
         assert!(frame_array.is_standard_layout());
 
@@ -287,7 +290,7 @@ pub fn convert_ndarray_to_frame_rgb24(frame_array: &FrameArray) -> Result<Frame,
             (*frame_tmp_ptr).data.as_ptr() as *mut *mut u8,
             (*frame_tmp_ptr).linesize.as_ptr() as *mut i32,
             frame_array.as_ptr(),
-            AVPixelFormat::AV_PIX_FMT_RGB24,
+            pixel_format,
             frame_width as i32,
             frame_height as i32,
             1,
@@ -306,13 +309,18 @@ pub fn convert_ndarray_to_frame_rgb24(frame_array: &FrameArray) -> Result<Frame,
             (*frame_ptr).linesize.as_ptr() as *mut i32,
             (*frame_tmp_ptr).data.as_ptr() as *mut *const u8,
             (*frame_tmp_ptr).linesize.as_ptr(),
-            AVPixelFormat::AV_PIX_FMT_RGB24,
+            pixel_format,
             frame_width as i32,
             frame_height as i32,
         );
 
         Ok(frame)
     }
+}
+
+#[cfg(feature = "ndarray")]
+pub fn convert_ndarray_to_frame_rgb24(frame_array: &FrameArray) -> Result<Frame, Error> {
+    convert_ndarray_to_frame(frame_array, AVPixelFormat::AV_PIX_FMT_RGB24)
 }
 
 /// Converts an RGB24 video `AVFrame` produced by ffmpeg to an `ndarray`.
@@ -325,14 +333,17 @@ pub fn convert_ndarray_to_frame_rgb24(frame_array: &FrameArray) -> Result<Frame,
 ///
 /// A three-dimensional `ndarray` with dimensions `(H, W, C)` and type byte.
 #[cfg(feature = "ndarray")]
-pub fn convert_frame_to_ndarray_rgb24(frame: &mut Frame) -> Result<FrameArray, Error> {
+pub fn convert_frame_to_ndarray(
+    frame: &mut Frame,
+    pixel_format: AVPixelFormat,
+) -> Result<FrameArray, Error> {
     unsafe {
         let frame_ptr = frame.as_mut_ptr();
         let frame_width: i32 = (*frame_ptr).width;
         let frame_height: i32 = (*frame_ptr).height;
         let frame_format =
             std::mem::transmute::<std::ffi::c_int, AVPixelFormat>((*frame_ptr).format);
-        assert_eq!(frame_format, AVPixelFormat::AV_PIX_FMT_RGB24);
+        assert_eq!(frame_format, pixel_format);
 
         let mut frame_array =
             FrameArray::default((frame_height as usize, frame_width as usize, 3_usize));
@@ -354,6 +365,11 @@ pub fn convert_frame_to_ndarray_rgb24(frame: &mut Frame) -> Result<FrameArray, E
             Err(Error::from(bytes_copied))
         }
     }
+}
+
+#[cfg(feature = "ndarray")]
+pub fn convert_frame_to_ndarray_rgb24(frame: &mut Frame) -> Result<FrameArray, Error> {
+    convert_frame_to_ndarray(frame, AVPixelFormat::AV_PIX_FMT_RGB24)
 }
 
 /// Retrieve a reference to the extradata bytes in codec parameters of an output stream.

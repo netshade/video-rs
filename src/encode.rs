@@ -20,6 +20,8 @@ use ffmpeg::Rational as AvRational;
 pub use ffmpeg::codec::Id as AvCodecId;
 pub use ffmpeg::software::scaling::flag::Flags as AvScalerFlags;
 pub use ffmpeg::util::format::Pixel as AvPixel;
+use tracing::error;
+use tracing::trace;
 
 use crate::error::Error;
 use crate::ffi;
@@ -159,6 +161,10 @@ impl Encoder {
             || width != self.source_width as usize
             || channels != 3
         {
+            error!(
+                "Error, expected {}x{} 3 channels, received {}x{} {:?} channels",
+                self.source_width, self.source_height, width, height, channels
+            );
             return Err(Error::InvalidFrameFormat);
         }
 
@@ -184,6 +190,15 @@ impl Encoder {
             || frame.height() != self.source_height
             || frame.format() != self.source_format
         {
+            error!(
+                "Error, expected {}x{} {:?}, received {}x{} {:?}",
+                self.source_width,
+                self.source_height,
+                self.source_format,
+                frame.width(),
+                frame.height(),
+                frame.format()
+            );
             return Err(Error::InvalidFrameFormat);
         }
 

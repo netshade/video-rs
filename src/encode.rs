@@ -20,6 +20,9 @@ use ffmpeg::Rational as AvRational;
 // We re-export these two types to allow callers to select pixel formats and codecs
 pub use ffmpeg::codec::Id as AvCodecId;
 pub use ffmpeg::util::format::Pixel as AvPixel;
+use ffmpeg_next::ffi::av_image_copy;
+use ffmpeg_next::ffi::av_image_fill_arrays;
+use ffmpeg_next::ffi::AVChromaLocation;
 
 use crate::error::Error;
 use crate::ffi;
@@ -134,7 +137,84 @@ pub struct Encoder {
     have_written_trailer: bool,
 }
 
+pub enum ResizeType {
+    Bilinear,
+    Lanczos,
+    FastBilinear,
+    Bicubic,
+}
+
+impl Into<AvScalerFlags> for ResizeType {
+    fn into(self) -> AvScalerFlags {
+        match self {
+            Self::Bilinear => AvScalerFlags::BILINEAR,
+            Self::Lanczos => AvScalerFlags::LANCZOS,
+            Self::FastBilinear => AvScalerFlags::FAST_BILINEAR,
+            Self::Bicubic => AvScalerFlags::BICUBIC,
+        }
+    }
+}
+
 impl Encoder {
+    pub fn sws_scale(
+        data: &[u8],
+        source_width: u32,
+        source_height: u32,
+        source_fmt: PixelFormat,
+        destination_width: u32,
+        destination_height: u32,
+        destination_fmt: PixelFormat,
+        resize_type: ResizeType,
+    ) -> Result<Vec<u8>> {
+        let mut frame = RawFrame::new(source_fmt, source_width, source_height);
+        unsafe {
+            let mut frame_tmp = RawFrame::empty();
+            let frame_tmp_ptr = frame_tmp.as_mut_ptr();
+
+            // This does not copy the data, but it sets the `frame_tmp` data and linesize pointers
+            // correctly.
+            let bytes_copied = av_image_fill_arrays(
+                (*frame_tmp_ptr).data.as_ptr() as *mut *mut u8,
+                (*frame_tmp_ptr).linesize.as_ptr() as *mut i32,
+                data.as_ptr(),
+                source_fmt.into(),
+                source_width as i32,
+                source_height as i32,
+                1,
+            );
+
+            if bytes_copied != data.len() as i32 {
+                return Err(Error::ReadExhausted);
+            }
+
+            let frame_ptr = frame.as_mut_ptr();
+
+            // Do the actual copying.
+            av_image_copy(
+                (*frame_ptr).data.as_ptr() as *mut *mut u8,
+                (*frame_ptr).linesize.as_ptr() as *mut i32,
+                (*frame_tmp_ptr).data.as_ptr() as *mut *const u8,
+                (*frame_tmp_ptr).linesize.as_ptr(),
+                source_fmt.into(),
+                source_width as i32,
+                source_height as i32,
+            );
+        }
+        let mut scaler = AvScaler::get(
+            source_fmt,
+            source_width,
+            source_height,
+            destination_fmt,
+            destination_width,
+            destination_height,
+            resize_type.into(),
+        )?;
+        let mut frame_scaled = RawFrame::empty();
+        scaler
+            .run(&frame, &mut frame_scaled)
+            .map_err(Error::BackendError)?;
+        Ok(frame_scaled.data(0).into())
+    }
     /// Create an encoder with the specified destination and settings.
     ///
     /// * `destination` - Where to encode to.
@@ -327,7 +407,6 @@ impl Encoder {
             .map_err(Error::BackendError)?;
         // Copy over PTS from old frame.
         frame_scaled.set_pts(frame.pts());
-
         Ok(frame_scaled)
     }
 

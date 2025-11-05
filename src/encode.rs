@@ -390,7 +390,7 @@ impl Encoder {
     }
 
     /// Flush the encoder, drain any packets that still need processing.
-    fn flush(&mut self) -> Result<()> {
+    pub fn flush(&mut self) -> Result<()> {
         // Maximum number of invocations to `encoder_receive_packet`
         // to drain the items still on the queue before giving up.
         const MAX_DRAIN_ITERATIONS: u32 = 100;

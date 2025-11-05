@@ -20,9 +20,6 @@ use ffmpeg::Rational as AvRational;
 // We re-export these two types to allow callers to select pixel formats and codecs
 pub use ffmpeg::codec::Id as AvCodecId;
 pub use ffmpeg::util::format::Pixel as AvPixel;
-use ffmpeg_next::ffi::av_image_copy;
-use ffmpeg_next::ffi::av_image_fill_arrays;
-use ffmpeg_next::ffi::AVChromaLocation;
 
 use crate::error::Error;
 use crate::ffi;
@@ -137,84 +134,7 @@ pub struct Encoder {
     have_written_trailer: bool,
 }
 
-pub enum ResizeType {
-    Bilinear,
-    Lanczos,
-    FastBilinear,
-    Bicubic,
-}
-
-impl Into<AvScalerFlags> for ResizeType {
-    fn into(self) -> AvScalerFlags {
-        match self {
-            Self::Bilinear => AvScalerFlags::BILINEAR,
-            Self::Lanczos => AvScalerFlags::LANCZOS,
-            Self::FastBilinear => AvScalerFlags::FAST_BILINEAR,
-            Self::Bicubic => AvScalerFlags::BICUBIC,
-        }
-    }
-}
-
 impl Encoder {
-    pub fn sws_scale(
-        data: &[u8],
-        source_width: u32,
-        source_height: u32,
-        source_fmt: PixelFormat,
-        destination_width: u32,
-        destination_height: u32,
-        destination_fmt: PixelFormat,
-        resize_type: ResizeType,
-    ) -> Result<Vec<u8>> {
-        let mut frame = RawFrame::new(source_fmt, source_width, source_height);
-        unsafe {
-            let mut frame_tmp = RawFrame::empty();
-            let frame_tmp_ptr = frame_tmp.as_mut_ptr();
-
-            // This does not copy the data, but it sets the `frame_tmp` data and linesize pointers
-            // correctly.
-            let bytes_copied = av_image_fill_arrays(
-                (*frame_tmp_ptr).data.as_ptr() as *mut *mut u8,
-                (*frame_tmp_ptr).linesize.as_ptr() as *mut i32,
-                data.as_ptr(),
-                source_fmt.into(),
-                source_width as i32,
-                source_height as i32,
-                1,
-            );
-
-            if bytes_copied != data.len() as i32 {
-                return Err(Error::ReadExhausted);
-            }
-
-            let frame_ptr = frame.as_mut_ptr();
-
-            // Do the actual copying.
-            av_image_copy(
-                (*frame_ptr).data.as_ptr() as *mut *mut u8,
-                (*frame_ptr).linesize.as_ptr() as *mut i32,
-                (*frame_tmp_ptr).data.as_ptr() as *mut *const u8,
-                (*frame_tmp_ptr).linesize.as_ptr(),
-                source_fmt.into(),
-                source_width as i32,
-                source_height as i32,
-            );
-        }
-        let mut scaler = AvScaler::get(
-            source_fmt,
-            source_width,
-            source_height,
-            destination_fmt,
-            destination_width,
-            destination_height,
-            resize_type.into(),
-        )?;
-        let mut frame_scaled = RawFrame::empty();
-        scaler
-            .run(&frame, &mut frame_scaled)
-            .map_err(Error::BackendError)?;
-        Ok(frame_scaled.data(0).into())
-    }
     /// Create an encoder with the specified destination and settings.
     ///
     /// * `destination` - Where to encode to.
@@ -335,6 +255,9 @@ impl Encoder {
             source_height,
             destination_width,
             destination_height,
+            source_format,
+            destination_format,
+            scaler_flags,
             ..
         } = settings;
         let mut encoder_context = match settings.codec {
@@ -369,13 +292,13 @@ impl Encoder {
         writer_stream.set_parameters(&encoder);
 
         let scaler = AvScaler::get(
-            FRAME_PIXEL_FORMAT,
+            source_format,
             source_width,
             source_height,
-            encoder.format(),
+            destination_format,
             destination_width,
             destination_height,
-            AvScalerFlags::FAST_BILINEAR,
+            scaler_flags,
         )?;
 
         Ok(Self {
@@ -482,9 +405,11 @@ impl Drop for Encoder {
 pub struct Settings {
     source_width: u32,
     source_height: u32,
+    source_format: AvPixel,
+    scaler_flags: AvScalerFlags,
     destination_width: u32,
     destination_height: u32,
-    pixel_format: AvPixel,
+    destination_format: AvPixel,
     codec: Option<AvCodec>,
     keyframe_interval: u64,
     options: Options,
@@ -500,9 +425,10 @@ impl std::fmt::Debug for Settings {
         f.debug_struct("Settings")
             .field("source_width", &self.source_width)
             .field("source_height", &self.source_height)
+            .field("source_format", &self.source_format)
             .field("destination_width", &self.destination_width)
             .field("destination_height", &self.destination_height)
-            .field("pixel_format", &self.pixel_format)
+            .field("destination_format", &self.destination_format)
             .field("codec", &codec_name)
             .field("keyframe_interval", &self.keyframe_interval)
             .field("options", &self.options)
@@ -540,6 +466,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            AvPixel::RGB24,
+            AvScalerFlags::FAST_BILINEAR,
             width,
             height,
             AvPixel::YUV420P,
@@ -572,6 +500,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            AvPixel::RGB24,
+            AvScalerFlags::FAST_BILINEAR,
             width,
             height,
             pixel_format,
@@ -588,6 +518,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            AvPixel::RGB24,
+            AvScalerFlags::FAST_BILINEAR,
             width,
             height,
             AvPixel::YUV420P,
@@ -612,6 +544,8 @@ impl Settings {
         Self::new(
             width,
             height,
+            AvPixel::RGB24,
+            AvScalerFlags::FAST_BILINEAR,
             width,
             height,
             AvPixel::YUV420P,
@@ -623,18 +557,22 @@ impl Settings {
     pub fn new(
         source_width: usize,
         source_height: usize,
+        source_format: AvPixel,
+        scaler_flags: AvScalerFlags,
         destination_width: usize,
         destination_height: usize,
-        pixel_format: AvPixel,
+        destination_format: AvPixel,
         codec: Option<AvCodec>,
         options: Options,
     ) -> Settings {
         Self {
             source_width: source_width as u32,
             source_height: source_height as u32,
+            source_format,
+            scaler_flags,
             destination_width: destination_width as u32,
             destination_height: destination_height as u32,
-            pixel_format,
+            destination_format,
             keyframe_interval: Self::KEY_FRAME_INTERVAL,
             codec,
             options,
@@ -670,7 +608,7 @@ impl Settings {
     fn apply_to(&self, encoder: &mut AvVideo) {
         encoder.set_width(self.destination_width);
         encoder.set_height(self.destination_height);
-        encoder.set_format(self.pixel_format);
+        encoder.set_format(self.destination_format);
         encoder.set_frame_rate(Some((Self::FRAME_RATE, 1)));
     }
 

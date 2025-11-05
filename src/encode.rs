@@ -21,13 +21,12 @@ pub use ffmpeg::codec::Id as AvCodecId;
 pub use ffmpeg::software::scaling::flag::Flags as AvScalerFlags;
 pub use ffmpeg::util::format::Pixel as AvPixel;
 use tracing::error;
-use tracing::trace;
 
 use crate::error::Error;
 use crate::ffi;
 #[cfg(feature = "ndarray")]
 use crate::frame::Frame;
-use crate::frame::{PixelFormat, RawFrame, FRAME_PIXEL_FORMAT};
+use crate::frame::{PixelFormat, RawFrame};
 use crate::io::private::Write;
 use crate::io::{Writer, WriterBuilder};
 use crate::location::Location;

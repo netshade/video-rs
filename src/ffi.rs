@@ -300,7 +300,7 @@ pub fn convert_ndarray_to_frame(
             return Err(Error::from(bytes_copied));
         }
 
-        let mut frame = Frame::new(Pixel::RGB24, frame_width as u32, frame_height as u32);
+        let mut frame = Frame::new(pixel_format.into(), frame_width as u32, frame_height as u32);
         let frame_ptr = frame.as_mut_ptr();
 
         // Do the actual copying.

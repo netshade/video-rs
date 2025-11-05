@@ -429,6 +429,7 @@ pub struct Settings {
     destination_format: AvPixel,
     codec: Option<AvCodec>,
     keyframe_interval: u64,
+    frame_rate: i32,
     options: Options,
 }
 
@@ -448,6 +449,7 @@ impl std::fmt::Debug for Settings {
             .field("destination_format", &self.destination_format)
             .field("codec", &codec_name)
             .field("keyframe_interval", &self.keyframe_interval)
+            .field("frame_rate", &self.frame_rate)
             .field("options", &self.options)
             .finish()
     }
@@ -488,6 +490,8 @@ impl Settings {
             width,
             height,
             AvPixel::YUV420P,
+            Self::KEY_FRAME_INTERVAL,
+            Self::FRAME_RATE,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
             options,
         )
@@ -522,6 +526,8 @@ impl Settings {
             width,
             height,
             pixel_format,
+            Self::KEY_FRAME_INTERVAL,
+            Self::FRAME_RATE,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
             options,
         )
@@ -540,6 +546,8 @@ impl Settings {
             width,
             height,
             AvPixel::YUV420P,
+            Self::KEY_FRAME_INTERVAL,
+            Self::FRAME_RATE,
             Self::find_codec(AvCodecId::VP9, Some("libvpx-vp9")),
             options.unwrap_or_default(),
         )
@@ -566,6 +574,8 @@ impl Settings {
             width,
             height,
             AvPixel::YUV420P,
+            Self::KEY_FRAME_INTERVAL,
+            Self::FRAME_RATE,
             Self::find_codec(AvCodecId::VP9, Some("libvpx-vp9")),
             opts,
         )
@@ -579,6 +589,8 @@ impl Settings {
         destination_width: usize,
         destination_height: usize,
         destination_format: AvPixel,
+        keyframe_interval: u64,
+        frame_rate: i32,
         codec: Option<AvCodec>,
         options: Options,
     ) -> Settings {
@@ -590,7 +602,8 @@ impl Settings {
             destination_width: destination_width as u32,
             destination_height: destination_height as u32,
             destination_format,
-            keyframe_interval: Self::KEY_FRAME_INTERVAL,
+            keyframe_interval,
+            frame_rate,
             codec,
             options,
         }
@@ -626,7 +639,7 @@ impl Settings {
         encoder.set_width(self.destination_width);
         encoder.set_height(self.destination_height);
         encoder.set_format(self.destination_format);
-        encoder.set_frame_rate(Some((Self::FRAME_RATE, 1)));
+        encoder.set_frame_rate(Some((self.frame_rate, 1)));
     }
 
     /// Get encoder options.

@@ -2,7 +2,6 @@ extern crate ffmpeg_next as ffmpeg;
 
 use std::ffi::c_int;
 
-use ffmpeg::codec::codec::Codec as AvCodec;
 use ffmpeg::codec::encoder::video::Encoder as AvEncoder;
 use ffmpeg::codec::encoder::video::Video as AvVideo;
 use ffmpeg::codec::flag::Flags as AvCodecFlags;
@@ -17,6 +16,7 @@ use ffmpeg::Error as AvError;
 use ffmpeg::Rational as AvRational;
 
 // We re-export these two types to allow callers to select pixel formats and codecs
+pub use ffmpeg::codec::codec::Codec as AvCodec;
 pub use ffmpeg::codec::Id as AvCodecId;
 pub use ffmpeg::software::scaling::flag::Flags as AvScalerFlags;
 pub use ffmpeg::util::format::Pixel as AvPixel;

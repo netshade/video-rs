@@ -465,11 +465,16 @@ impl Settings {
 
     pub fn find_codec(codec_id: AvCodecId, default_name: Option<&str>) -> Option<AvCodec> {
         if let Some(default_name) = default_name {
-            if let Some(codec) = ffmpeg::encoder::find_by_name(default_name) {
-                return Some(codec);
+            let result = Self::find_codec_by_name(default_name);
+            if result.is_some() {
+                return result;
             }
         }
         ffmpeg::encoder::find(codec_id)
+    }
+
+    pub fn find_codec_by_name(name: &str) -> Option<AvCodec> {
+        ffmpeg::encoder::find_by_name(name)
     }
 
     /// Create encoder settings for an H264 stream with YUV420p pixel format. This will encode to

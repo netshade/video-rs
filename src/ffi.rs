@@ -1,5 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 
+use std::rc::Rc;
+
 #[cfg(feature = "ndarray")]
 use ndarray::Array3;
 
@@ -199,8 +201,16 @@ pub fn output_raw_packetized_buf_end(output: &mut Output) {
 pub fn flush_output(output: &mut Output) -> Result<(), Error> {
     unsafe {
         match av_write_frame(output.as_mut_ptr(), std::ptr::null_mut()) {
-            0 => Ok(()),
-            1 => Ok(()),
+            0 => {
+                let pb = (*output.as_ptr()).pb;
+                avio_flush(pb);
+                Ok(())
+            }
+            1 => {
+                let pb = (*output.as_ptr()).pb;
+                avio_flush(pb);
+                Ok(())
+            }
             e => Err(Error::from(e)),
         }
     }

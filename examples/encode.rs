@@ -1,3 +1,5 @@
+#[cfg(feature = "h264")]
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ndarray::Array3;
@@ -29,12 +31,22 @@ impl Default for Codec {
 }
 
 impl Codec {
-    fn settings(&self, width: usize, height: usize) -> Settings {
+    fn settings(&self, width: usize, height: usize, comment: Option<String>) -> Settings {
         match self {
             #[cfg(feature = "h264")]
-            Self::H264 => Settings::preset_h264_yuv420p(width, height, true),
+            Self::H264 => Settings::preset_h264_yuv420p(
+                width,
+                height,
+                true,
+                Some(HashMap::from([("comment".into(), "h264 example".into())])),
+            ),
             #[cfg(feature = "vp9")]
-            Self::VP9 => Settings::preset_vp9_yuv420p_realtime(width, height, None),
+            Self::VP9 => Settings::preset_vp9_yuv420p_realtime(
+                width,
+                height,
+                None,
+                Some(HashMap::from([("comment".into(), "vp9 example".into())])),
+            ),
             Self::None => panic!("could not create settings"),
         }
     }
@@ -80,9 +92,10 @@ impl Args {
 
     fn settings(&self) -> Settings {
         let settings = if let Some(codec) = &self.codec {
-            codec.settings(self.width, self.height)
+            codec.settings(self.width, self.height, Some("Example".into()))
         } else {
-            self.detected_codec().settings(self.width, self.height)
+            self.detected_codec()
+                .settings(self.width, self.height, Some("Example".into()))
         };
         if self.resized_width.is_some() || self.resized_height.is_some() {
             settings.resized_to(

@@ -1,5 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 
+use std::collections::HashMap;
 use std::ffi::c_int;
 
 use ffmpeg::codec::encoder::video::Encoder as AvEncoder;
@@ -7,7 +8,6 @@ use ffmpeg::codec::encoder::video::Video as AvVideo;
 use ffmpeg::codec::flag::Flags as AvCodecFlags;
 use ffmpeg::codec::packet::Packet as AvPacket;
 use ffmpeg::codec::Context as AvContext;
-use ffmpeg::format::flag::Flags as AvFormatFlags;
 use ffmpeg::software::scaling::context::Context as AvScaler;
 use ffmpeg::util::error::EAGAIN;
 use ffmpeg::util::mathematics::rescale::TIME_BASE;
@@ -258,13 +258,12 @@ impl Encoder {
     /// * `interleaved` - Whether or not to use interleaved write.
     /// * `settings` - Encoder settings to use.
     fn from_writer(mut writer: Writer, interleaved: bool, settings: Settings) -> Result<Self> {
-        let global_header = writer
-            .output
-            .format()
-            .flags()
-            .contains(AvFormatFlags::GLOBAL_HEADER);
+        let global_header = writer.global_header();
 
-        let mut writer_stream = writer.output.add_stream(settings.codec)?;
+        if let Some(metadata) = settings.metadata.clone() {
+            writer.set_metadata(metadata);
+        }
+        let mut writer_stream = writer.add_stream(settings.codec)?;
         let writer_stream_index = writer_stream.index();
         let Settings {
             source_width,
@@ -430,6 +429,7 @@ pub struct Settings {
     codec: Option<AvCodec>,
     keyframe_interval: u64,
     frame_rate: i32,
+    metadata: Option<HashMap<String, String>>,
     options: Options,
 }
 
@@ -439,6 +439,11 @@ impl std::fmt::Debug for Settings {
             codec.name()
         } else {
             "None"
+        };
+        let metadata = if let Some(metadata) = &self.metadata {
+            metadata.clone()
+        } else {
+            HashMap::default()
         };
         f.debug_struct("Settings")
             .field("source_width", &self.source_width)
@@ -450,6 +455,7 @@ impl std::fmt::Debug for Settings {
             .field("codec", &codec_name)
             .field("keyframe_interval", &self.keyframe_interval)
             .field("frame_rate", &self.frame_rate)
+            .field("metadata", &metadata)
             .field("options", &self.options)
             .finish()
     }
@@ -481,7 +487,12 @@ impl Settings {
     /// arguably the most widely compatible video file since H264 is a common codec and YUV420p is
     /// the most commonly used pixel format.
     #[cfg(feature = "h264")]
-    pub fn preset_h264_yuv420p(width: usize, height: usize, realtime: bool) -> Settings {
+    pub fn preset_h264_yuv420p(
+        width: usize,
+        height: usize,
+        realtime: bool,
+        metadata: Option<HashMap<String, String>>,
+    ) -> Settings {
         let options = if realtime {
             Options::preset_h264_realtime()
         } else {
@@ -499,6 +510,7 @@ impl Settings {
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
             options,
+            metadata,
         )
     }
 
@@ -522,6 +534,7 @@ impl Settings {
         height: usize,
         pixel_format: PixelFormat,
         options: Options,
+        metadata: Option<HashMap<String, String>>,
     ) -> Settings {
         Self::new(
             width,
@@ -535,6 +548,7 @@ impl Settings {
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
             options,
+            metadata,
         )
     }
 
@@ -542,7 +556,12 @@ impl Settings {
     /// a widely supported video file that is not patent / licensing encumbered and YUV420p is
     /// the most commonly used pixel format.
     #[cfg(feature = "vp9")]
-    pub fn preset_vp9_yuv420p(width: usize, height: usize, options: Option<Options>) -> Settings {
+    pub fn preset_vp9_yuv420p(
+        width: usize,
+        height: usize,
+        options: Option<Options>,
+        metadata: Option<HashMap<String, String>>,
+    ) -> Settings {
         Self::new(
             width,
             height,
@@ -555,6 +574,7 @@ impl Settings {
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::VP9, Some("libvpx-vp9")),
             options.unwrap_or_default(),
+            metadata,
         )
     }
 
@@ -566,6 +586,7 @@ impl Settings {
         width: usize,
         height: usize,
         options: Option<Options>,
+        metadata: Option<HashMap<String, String>>,
     ) -> Settings {
         let mut opts = options.unwrap_or_default();
         opts.set("deadline", "realtime");
@@ -583,6 +604,7 @@ impl Settings {
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::VP9, Some("libvpx-vp9")),
             opts,
+            metadata,
         )
     }
 
@@ -598,6 +620,7 @@ impl Settings {
         frame_rate: i32,
         codec: Option<AvCodec>,
         options: Options,
+        metadata: Option<HashMap<String, String>>,
     ) -> Settings {
         Self {
             source_width: source_width as u32,
@@ -610,6 +633,7 @@ impl Settings {
             keyframe_interval,
             frame_rate,
             codec,
+            metadata,
             options,
         }
     }

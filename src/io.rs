@@ -1,11 +1,15 @@
 extern crate ffmpeg_next as ffmpeg;
 
+use std::collections::HashMap;
+
 use ffmpeg::codec::packet::Packet as AvPacket;
 use ffmpeg::ffi::AV_TIME_BASE_Q;
 use ffmpeg::format::context::{Input as AvInput, Output as AvOutput};
+use ffmpeg::format::flag::Flags as AvFormatFlags;
 use ffmpeg::media::Type as AvMediaType;
 use ffmpeg::Error as AvError;
 use ffmpeg_next::ffi::av_seek_frame;
+use ffmpeg_next::{Codec, Dictionary, Error as FFError, StreamMut};
 
 use crate::error::Error;
 use crate::ffi;
@@ -299,6 +303,25 @@ impl Writer {
     #[inline]
     pub fn new(destination: impl Into<Location>) -> Result<Self> {
         WriterBuilder::new(destination).build()
+    }
+
+    pub fn global_header(&self) -> bool {
+        self.output
+            .format()
+            .flags()
+            .contains(AvFormatFlags::GLOBAL_HEADER)
+    }
+
+    pub fn set_metadata(&mut self, metadata: HashMap<String, String>) {
+        self.output
+            .set_metadata(Dictionary::from_iter(metadata.into_iter()));
+    }
+
+    pub fn add_stream(
+        &mut self,
+        codec: Option<Codec>,
+    ) -> std::result::Result<StreamMut<'_>, FFError> {
+        self.output.add_stream(codec)
     }
 }
 

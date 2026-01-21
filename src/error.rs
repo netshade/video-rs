@@ -16,6 +16,7 @@ pub enum Error {
     InvalidResizeParameters,
     UninitializedCodec,
     UnsupportedCodecHardwareAccelerationDeviceType,
+    SubtitleTrackNotConfigured,
     BackendError(FfmpegError),
 }
 
@@ -32,6 +33,7 @@ impl std::error::Error for Error {
             Error::InvalidResizeParameters => None,
             Error::UninitializedCodec => None,
             Error::UnsupportedCodecHardwareAccelerationDeviceType => None,
+            Error::SubtitleTrackNotConfigured => None,
             Error::BackendError(ref internal) => Some(internal),
         }
     }
@@ -63,6 +65,9 @@ impl std::fmt::Display for Error {
             }
             Error::UnsupportedCodecHardwareAccelerationDeviceType => {
                 write!(f, "codec does not supported hardware acceleration device")
+            }
+            Error::SubtitleTrackNotConfigured => {
+                write!(f, "subtitle track not configured on encoder")
             }
             Error::BackendError(ref internal) => internal.fmt(f),
         }

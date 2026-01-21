@@ -14,6 +14,7 @@ pub mod packet;
 pub mod resize;
 pub mod rtp;
 pub mod stream;
+pub mod subtitle;
 pub mod time;
 
 mod ffi;
@@ -32,7 +33,27 @@ pub use mux::{Muxer, MuxerBuilder};
 pub use options::Options;
 pub use packet::Packet;
 pub use resize::Resize;
+pub use subtitle::{SubtitleCue, SubtitleFormat};
 pub use time::Time;
 
 /// Re-export backend `ffmpeg` library.
 pub use ffmpeg_next as ffmpeg;
+
+/// Create a FourCC tag from four bytes, replicating FFmpeg's `MKTAG` macro.
+///
+/// This combines four characters into a single `u32` value, commonly used
+/// for codec tags and format identifiers in FFmpeg.
+///
+/// # Example
+///
+/// ```
+/// use video_rs::mktag;
+///
+/// // Create the 'avc1' tag for H.264
+/// let avc1 = mktag(b'a', b'v', b'c', b'1');
+/// assert_eq!(avc1, 0x31637661);
+/// ```
+#[inline]
+pub const fn mktag(a: u8, b: u8, c: u8, d: u8) -> u32 {
+    (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
+}

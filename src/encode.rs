@@ -30,8 +30,9 @@ use crate::frame::{PixelFormat, RawFrame};
 use crate::io::private::Write;
 use crate::io::{Writer, WriterBuilder};
 use crate::location::Location;
+use crate::mktag;
 use crate::options::Options;
-#[cfg(feature = "ndarray")]
+use crate::subtitle::{SubtitleCue, SubtitleEncoderState, SubtitleFormat};
 use crate::time::Time;
 
 type Result<T> = std::result::Result<T, Error>;
@@ -43,6 +44,8 @@ pub struct EncoderBuilder<'a> {
     options: Option<&'a Options>,
     format: Option<&'a str>,
     interleaved: bool,
+    subtitle_format: Option<SubtitleFormat>,
+    subtitle_language: String,
 }
 
 impl<'a> EncoderBuilder<'a> {
@@ -57,6 +60,8 @@ impl<'a> EncoderBuilder<'a> {
             options: None,
             format: None,
             interleaved: false,
+            subtitle_format: None,
+            subtitle_language: "eng".to_string(),
         }
     }
 
@@ -87,6 +92,28 @@ impl<'a> EncoderBuilder<'a> {
         self
     }
 
+    /// Add a subtitle track with the specified format.
+    ///
+    /// # Arguments
+    ///
+    /// * `format` - The subtitle format to use.
+    pub fn with_subtitle_track(mut self, format: SubtitleFormat) -> Self {
+        self.subtitle_format = Some(format);
+        self
+    }
+
+    /// Set the language for the subtitle track (ISO 639-2 code, e.g., "eng", "spa", "fra").
+    ///
+    /// Defaults to "eng" (English) if not specified.
+    ///
+    /// # Arguments
+    ///
+    /// * `language` - ISO 639-2 language code.
+    pub fn subtitle_language(mut self, language: impl Into<String>) -> Self {
+        self.subtitle_language = language.into();
+        self
+    }
+
     /// Build an [`Encoder`].
     pub fn build(self) -> Result<Encoder> {
         let mut writer_builder = WriterBuilder::new(self.destination);
@@ -96,7 +123,13 @@ impl<'a> EncoderBuilder<'a> {
         if let Some(format) = self.format {
             writer_builder = writer_builder.with_format(format);
         }
-        Encoder::from_writer(writer_builder.build()?, self.interleaved, self.settings)
+        Encoder::from_writer(
+            writer_builder.build()?,
+            self.interleaved,
+            self.settings,
+            self.subtitle_format,
+            self.subtitle_language,
+        )
     }
 }
 
@@ -134,6 +167,7 @@ pub struct Encoder {
     frame_count: u64,
     have_written_header: bool,
     have_written_trailer: bool,
+    subtitle_state: Option<SubtitleEncoderState>,
 }
 
 impl Encoder {
@@ -228,6 +262,96 @@ impl Encoder {
         Ok(())
     }
 
+    /// Encode a subtitle cue.
+    ///
+    /// # Arguments
+    ///
+    /// * `cue` - The subtitle cue to encode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SubtitleTrackNotConfigured`] if no subtitle track was configured
+    /// when building the encoder.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use video_rs::subtitle::{SubtitleCue, SubtitleFormat};
+    /// use video_rs::time::Time;
+    ///
+    /// let mut encoder = EncoderBuilder::new("output.mp4", settings)
+    ///     .with_subtitle_track(SubtitleFormat::MovText)
+    ///     .build()?;
+    ///
+    /// encoder.encode_subtitle(&SubtitleCue::new(
+    ///     "Hello, world!",
+    ///     Time::from_secs(1.0),
+    ///     Time::from_secs(2.5),
+    /// ))?;
+    /// ```
+    pub fn encode_subtitle(&mut self, cue: &SubtitleCue) -> Result<()> {
+        let state = self
+            .subtitle_state
+            .as_ref()
+            .ok_or(Error::SubtitleTrackNotConfigured)?;
+
+        // Write file header if we hadn't done that yet.
+        if !self.have_written_header {
+            self.writer.write_header()?;
+            self.have_written_header = true;
+        }
+
+        // Convert start time to time base units for PTS
+        let pts_value = cue
+            .start
+            .aligned_with_rational(state.time_base)
+            .into_value()
+            .unwrap_or(0);
+
+        // Duration in milliseconds (since time_base is 1/1000)
+        let duration_ms = (cue.duration.as_secs_f64() * 1000.0).round() as i64;
+
+        // Create subtitle data packet with format-specific encoding
+        let packet_data = match state.format {
+            SubtitleFormat::MovText => {
+                // mov_text (tx3g) format requires a 16-bit big-endian length prefix
+                let text_bytes = cue.text.as_bytes();
+                let len = text_bytes.len() as u16;
+                let mut data = Vec::with_capacity(2 + text_bytes.len());
+                data.extend_from_slice(&len.to_be_bytes());
+                data.extend_from_slice(text_bytes);
+                data
+            }
+            _ => {
+                // Other formats: use raw text for now
+                cue.text.as_bytes().to_vec()
+            }
+        };
+
+        let mut packet = AvPacket::copy(&packet_data);
+        packet.set_stream(state.stream_index);
+        packet.set_pts(Some(pts_value));
+        packet.set_dts(Some(pts_value));
+        packet.set_duration(duration_ms);
+
+        // Get the output stream time base and rescale
+        let stream_time_base = self
+            .writer
+            .output
+            .stream(state.stream_index)
+            .unwrap()
+            .time_base();
+        packet.rescale_ts(state.time_base, stream_time_base);
+
+        if self.interleaved {
+            self.writer.write_interleaved(&mut packet)?;
+        } else {
+            self.writer.write(&mut packet)?;
+        }
+
+        Ok(())
+    }
+
     /// Signal to the encoder that writing has finished. This will cause any packets in the encoder
     /// to be flushed and a trailer to be written if the container format has one.
     ///
@@ -257,7 +381,15 @@ impl Encoder {
     /// * `writer` - [`Writer`] to create encoder from.
     /// * `interleaved` - Whether or not to use interleaved write.
     /// * `settings` - Encoder settings to use.
-    fn from_writer(mut writer: Writer, interleaved: bool, settings: Settings) -> Result<Self> {
+    /// * `subtitle_format` - Optional subtitle format to enable subtitle track.
+    /// * `subtitle_language` - Language code for the subtitle track.
+    fn from_writer(
+        mut writer: Writer,
+        interleaved: bool,
+        settings: Settings,
+        subtitle_format: Option<SubtitleFormat>,
+        subtitle_language: String,
+    ) -> Result<Self> {
         let global_header = writer.global_header();
 
         if let Some(metadata) = settings.metadata.clone() {
@@ -316,6 +448,74 @@ impl Encoder {
             scaler_flags,
         )?;
 
+        // Set up subtitle stream if requested
+        let subtitle_state = if let Some(format) = subtitle_format {
+            let subtitle_codec_id: AvCodecId = format.into();
+            let subtitle_codec =
+                ffmpeg::encoder::find(subtitle_codec_id).ok_or(Error::UninitializedCodec)?;
+
+            // Add subtitle stream
+            let mut subtitle_stream = writer.add_stream(Some(subtitle_codec))?;
+            let subtitle_stream_index = subtitle_stream.index();
+
+            // Subtitle time base: 1/1000 (milliseconds)
+            let subtitle_time_base = AvRational::new(1, 1000);
+            subtitle_stream.set_time_base(subtitle_time_base);
+
+            // Set codec parameters directly on the stream
+            {
+                let mut parameters = subtitle_stream.parameters();
+                // Safety: We need to set the codec_id on the parameters
+                unsafe {
+                    (*parameters.as_mut_ptr()).codec_type =
+                        ffmpeg::ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE;
+                    (*parameters.as_mut_ptr()).codec_id = subtitle_codec_id.into();
+
+                    // Set codec_tag to 'tx3g' for MOV_TEXT to ensure FFmpeg's MOV muxer
+                    // uses the 'sbtl' handler type instead of 'text'. This is required
+                    // for QuickTime, VLC, and other Apple-compatible players to recognize
+                    // the subtitle track.
+                    if matches!(format, SubtitleFormat::MovText) {
+                        (*parameters.as_mut_ptr()).codec_tag = mktag(b't', b'x', b'3', b'g');
+
+                        // Set the tx3g sample description extradata for QuickTime compatibility.
+                        // This includes display settings, default style, and font table.
+                        let extradata = build_tx3g_extradata();
+                        let extradata_size = extradata.len();
+
+                        // Allocate with av_mallocz (FFmpeg will free this later).
+                        // Must include AV_INPUT_BUFFER_PADDING_SIZE for safety.
+                        let alloc_size =
+                            extradata_size + ffmpeg::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+                        let extradata_ptr = ffmpeg::ffi::av_mallocz(alloc_size) as *mut u8;
+
+                        if !extradata_ptr.is_null() {
+                            std::ptr::copy_nonoverlapping(
+                                extradata.as_ptr(),
+                                extradata_ptr,
+                                extradata_size,
+                            );
+                            (*parameters.as_mut_ptr()).extradata = extradata_ptr;
+                            (*parameters.as_mut_ptr()).extradata_size = extradata_size as c_int;
+                        }
+                    }
+                }
+            }
+
+            // Set language metadata
+            let mut metadata = ffmpeg::Dictionary::new();
+            metadata.set("language", &subtitle_language);
+            subtitle_stream.set_metadata(metadata);
+
+            Some(SubtitleEncoderState::new(
+                subtitle_stream_index,
+                subtitle_time_base,
+                format,
+            ))
+        } else {
+            None
+        };
+
         Ok(Self {
             writer,
             writer_stream_index,
@@ -330,6 +530,7 @@ impl Encoder {
             frame_count: 0,
             have_written_header: false,
             have_written_trailer: false,
+            subtitle_state,
         })
     }
 
@@ -679,3 +880,101 @@ impl Settings {
 
 unsafe impl Send for Encoder {}
 unsafe impl Sync for Encoder {}
+
+/// TX3G (mov_text) sample description constants.
+///
+/// These define the default subtitle appearance for QuickTime-compatible players.
+/// Reference: 3GPP TS 26.245 (Timed Text Format)
+mod tx3g {
+    /// Display flags - controls scrolling, karaoke, etc. 0 = static text.
+    pub const DISPLAY_FLAGS: u32 = 0;
+
+    /// Horizontal justification: 0=left, 1=center, 2=right
+    pub const JUSTIFY_CENTER: u8 = 0x01;
+
+    /// Vertical justification: 0=top, 1=center, -1(0xFF)=bottom
+    pub const JUSTIFY_BOTTOM: u8 = 0xFF;
+
+    /// Background color (RGBA) - transparent black
+    pub const BACKGROUND_COLOR: u32 = 0x00000000;
+
+    /// Text box bounds (top, left, bottom, right) - zeros means use full frame
+    pub const TEXT_BOX_BOUNDS: [u8; 8] = [0; 8];
+
+    /// Default font ID referenced in style and font table
+    pub const DEFAULT_FONT_ID: u16 = 1;
+
+    /// Style flags: 0=normal, 1=bold, 2=italic, 4=underline
+    pub const STYLE_NORMAL: u8 = 0x00;
+
+    /// Default font size in points
+    pub const FONT_SIZE_PT: u8 = 18;
+
+    /// Text color (RGBA) - opaque white
+    pub const TEXT_COLOR_WHITE: u32 = 0xFFFFFFFF;
+
+    /// Default font name - "Serif" is a standard fallback name
+    pub const FONT_NAME: &[u8] = b"Serif";
+
+    /// FontTableBox type tag
+    pub const FTAB_TAG: &[u8; 4] = b"ftab";
+
+    /// FontTableBox header size (box_size + tag + entry_count = 4 + 4 + 2)
+    pub const FTAB_HEADER_SIZE: u32 = 10;
+
+    /// FontRecord overhead (font_id + name_length = 2 + 1)
+    pub const FONT_RECORD_OVERHEAD: u32 = 3;
+}
+
+/// Build the tx3g (mov_text) sample description extradata.
+///
+/// This contains the display settings, default style, and font table required
+/// for QuickTime and other Apple players to properly recognize subtitle tracks.
+///
+/// Structure (48 bytes for default "Serif" font):
+/// - Display flags (4 bytes)
+/// - Justification (2 bytes)
+/// - Background color RGBA (4 bytes)
+/// - BoxRecord: text box bounds (8 bytes)
+/// - StyleRecord: default text style (12 bytes)
+/// - FontTableBox: font definitions (variable, 18 bytes for "Serif")
+/// This structure definition is taken from https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/movtextenc.c#L189-L216
+fn build_tx3g_extradata() -> Vec<u8> {
+    use tx3g::*;
+
+    let mut data = Vec::with_capacity(48);
+
+    // Display flags (4 bytes)
+    data.extend_from_slice(&DISPLAY_FLAGS.to_be_bytes());
+
+    // Justification (2 bytes)
+    data.push(JUSTIFY_CENTER);
+    data.push(JUSTIFY_BOTTOM);
+
+    // Background color RGBA (4 bytes)
+    data.extend_from_slice(&BACKGROUND_COLOR.to_be_bytes());
+
+    // BoxRecord (8 bytes): text positioning bounds
+    data.extend_from_slice(&TEXT_BOX_BOUNDS);
+
+    // StyleRecord (12 bytes)
+    data.extend_from_slice(&0u16.to_be_bytes()); // startChar (apply from start)
+    data.extend_from_slice(&0u16.to_be_bytes()); // endChar (apply to end)
+    data.extend_from_slice(&DEFAULT_FONT_ID.to_be_bytes());
+    data.push(STYLE_NORMAL);
+    data.push(FONT_SIZE_PT);
+    data.extend_from_slice(&TEXT_COLOR_WHITE.to_be_bytes());
+
+    // FontTableBox
+    let ftab_size = FTAB_HEADER_SIZE + FONT_RECORD_OVERHEAD + FONT_NAME.len() as u32;
+    data.extend_from_slice(&ftab_size.to_be_bytes());
+    data.extend_from_slice(FTAB_TAG);
+    data.extend_from_slice(&1u16.to_be_bytes()); // entry-count
+
+    // FontRecord
+    data.extend_from_slice(&DEFAULT_FONT_ID.to_be_bytes());
+    data.push(FONT_NAME.len() as u8);
+    data.extend_from_slice(FONT_NAME);
+
+    data
+}

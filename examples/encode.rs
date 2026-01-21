@@ -1,10 +1,11 @@
 #[cfg(feature = "h264")]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ndarray::Array3;
 
-use video_rs::encode::{Encoder, Settings};
+use video_rs::encode::{EncoderBuilder, Settings};
+use video_rs::subtitle::{SubtitleCue, SubtitleFormat};
 use video_rs::time::Time;
 
 use clap::{Parser, ValueEnum};
@@ -79,7 +80,9 @@ impl Args {
             .filename
             .extension()
             .expect("Filename must have an extension");
-        if ext.eq_ignore_ascii_case("mp4") && cfg!(feature = "h264") {
+        if (ext.eq_ignore_ascii_case("mp4") || ext.eq_ignore_ascii_case("mov"))
+            && cfg!(feature = "h264")
+        {
             Codec::H264
         } else if ext.eq_ignore_ascii_case("webm") && cfg!(feature = "vp9") {
             Codec::VP9
@@ -87,6 +90,22 @@ impl Args {
             Codec::default()
         } else {
             panic!("Could not detect codec")
+        }
+    }
+
+    fn subtitle_format(&self) -> SubtitleFormat {
+        let ext = self
+            .filename
+            .extension()
+            .expect("Filename must have an extension");
+        if ext.eq_ignore_ascii_case("mp4") || ext.eq_ignore_ascii_case("mov") {
+            SubtitleFormat::MovText
+        } else if ext.eq_ignore_ascii_case("webm") {
+            SubtitleFormat::WebVtt
+        } else if ext.eq_ignore_ascii_case("mkv") {
+            SubtitleFormat::Srt
+        } else {
+            panic!("Could not detect subtitle format")
         }
     }
 
@@ -114,11 +133,18 @@ fn main() {
     video_rs::init().unwrap();
 
     let settings = args.settings();
-    let mut encoder =
-        Encoder::new(Path::new(&args.filename), settings).expect("failed to create encoder");
+    let subtitle_format = args.subtitle_format();
+
+    let mut encoder = EncoderBuilder::new(args.filename.as_path(), settings)
+        .with_subtitle_track(subtitle_format)
+        .subtitle_language("eng")
+        .build()
+        .expect("failed to create encoder");
 
     let duration: Time = Time::from_nth_of_a_second(24);
     let mut position = Time::zero();
+
+    // At 24fps, 256 frames = ~10.67 seconds of video
     for i in 0..256 {
         // This will create a smooth rainbow animation video!
         let frame = rainbow_frame(args.width, args.height, i as f32 / 256.0);
@@ -127,12 +153,28 @@ fn main() {
             .encode(&frame, position)
             .expect("failed to encode frame");
 
+        // Add a subtitle every second (every 24 frames at 24fps)
+        if i % 24 == 0 {
+            let second = i / 24;
+            let subtitle_text = format!("Second {}", second);
+            encoder
+                .encode_subtitle(&SubtitleCue::new(
+                    subtitle_text,
+                    position,
+                    Time::from_secs(1.0),
+                ))
+                .expect("failed to encode subtitle");
+        }
+
         // Update the current position and add the inter-frame duration to it.
         position = position.aligned_with(duration).add();
     }
 
     encoder.finish().expect("failed to finish encoder");
-    println!("Wrote {:?}", args.filename);
+    println!(
+        "Wrote {:?} with {:?} subtitle track",
+        args.filename, subtitle_format
+    );
 }
 
 fn rainbow_frame(width: usize, height: usize, p: f32) -> Array3<u8> {

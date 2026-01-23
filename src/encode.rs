@@ -599,6 +599,16 @@ impl Encoder {
         ffi::flush_output(&mut self.writer.output).map_err(Error::BackendError)
     }
 
+    /// Enable immediate packet flushing on the format context.
+    ///
+    /// When enabled, the muxer will flush packets to disk immediately rather
+    /// than buffering them. This is important for fragmented MP4 to ensure
+    /// the moov atom and fragments are written to disk promptly, making the
+    /// file playable during encoding.
+    pub fn set_flush_packets(&mut self, enabled: bool) {
+        self.writer.set_flush_packets(enabled);
+    }
+
     /// Flush the encoder, drain any packets that still need processing.
     pub fn flush(&mut self) -> Result<()> {
         // Maximum number of invocations to `encoder_receive_packet`

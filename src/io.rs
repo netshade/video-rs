@@ -323,6 +323,22 @@ impl Writer {
     ) -> std::result::Result<StreamMut<'_>, FFError> {
         self.output.add_stream(codec)
     }
+
+    /// Set flush_packets on the format context.
+    ///
+    /// When enabled, the muxer will flush packets to disk immediately rather
+    /// than buffering them. This is important for fragmented MP4 to ensure
+    /// the moov atom and fragments are written to disk promptly, making the
+    /// file playable during encoding.
+    ///
+    /// # Safety
+    ///
+    /// This modifies the underlying AVFormatContext directly.
+    pub fn set_flush_packets(&mut self, enabled: bool) {
+        unsafe {
+            (*self.output.as_mut_ptr()).flush_packets = if enabled { 1 } else { 0 };
+        }
+    }
 }
 
 impl Write for Writer {}

@@ -589,6 +589,16 @@ impl Encoder {
         Ok(())
     }
 
+    /// Flush output buffers to disk without finalizing the stream.
+    ///
+    /// Unlike `flush()`, this does not send EOF to the encoder and can be called
+    /// periodically during encoding to ensure data is written to disk. This is
+    /// useful for long-running captures where you want to minimize data loss
+    /// if the process is interrupted.
+    pub fn flush_output(&mut self) -> Result<()> {
+        ffi::flush_output(&mut self.writer.output).map_err(Error::BackendError)
+    }
+
     /// Flush the encoder, drain any packets that still need processing.
     pub fn flush(&mut self) -> Result<()> {
         // Maximum number of invocations to `encoder_receive_packet`

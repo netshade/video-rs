@@ -163,7 +163,7 @@ pub struct Encoder {
     encoder_time_base: AvRational,
     keyframe_interval: u64,
     interleaved: bool,
-    scaler: AvScaler,
+    scaler: Option<AvScaler>,
     source_width: u32,
     source_height: u32,
     source_format: PixelFormat,
@@ -441,15 +441,23 @@ impl Encoder {
 
         writer_stream.set_parameters(&encoder);
 
-        let scaler = AvScaler::get(
-            source_format,
-            source_width,
-            source_height,
-            destination_format,
-            destination_width,
-            destination_height,
-            scaler_flags,
-        )?;
+        let scaler_needed = source_format != destination_format
+            || source_width != destination_width
+            || source_height != destination_height;
+
+        let scaler = if scaler_needed {
+            Some(AvScaler::get(
+                source_format,
+                source_width,
+                source_height,
+                destination_format,
+                destination_width,
+                destination_height,
+                scaler_flags,
+            )?)
+        } else {
+            None
+        };
 
         // Set up subtitle stream if requested
         let subtitle_state = if let Some(format) = subtitle_format {
@@ -544,13 +552,18 @@ impl Encoder {
     ///
     /// * `frame` - Frame to rescale.
     fn scale(&mut self, frame: RawFrame) -> Result<RawFrame> {
-        let mut frame_scaled = RawFrame::empty();
-        self.scaler
-            .run(&frame, &mut frame_scaled)
-            .map_err(Error::BackendError)?;
-        // Copy over PTS from old frame.
-        frame_scaled.set_pts(frame.pts());
-        Ok(frame_scaled)
+        match self.scaler.as_mut() {
+            Some(scaler) => {
+                let mut frame_scaled = RawFrame::empty();
+                scaler
+                    .run(&frame, &mut frame_scaled)
+                    .map_err(Error::BackendError)?;
+                // Copy over PTS from old frame.
+                frame_scaled.set_pts(frame.pts());
+                Ok(frame_scaled)
+            }
+            None => Ok(frame), // Passthrough - no conversion needed
+        }
     }
 
     /// Pull an encoded packet from the decoder. This function also handles the possible `EAGAIN`

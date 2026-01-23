@@ -609,6 +609,20 @@ impl Encoder {
         self.writer.set_flush_packets(enabled);
     }
 
+    /// Write the file header if it hasn't been written yet.
+    ///
+    /// Normally the header is written lazily on the first `encode()` call.
+    /// This method allows you to write it explicitly, which is useful when
+    /// combined with `flush_output()` to ensure the header is on disk before
+    /// encoding begins (important for fragmented MP4 playback during encoding).
+    pub fn write_header(&mut self) -> Result<()> {
+        if !self.have_written_header {
+            self.writer.write_header()?;
+            self.have_written_header = true;
+        }
+        Ok(())
+    }
+
     /// Flush the encoder, drain any packets that still need processing.
     pub fn flush(&mut self) -> Result<()> {
         // Maximum number of invocations to `encoder_receive_packet`

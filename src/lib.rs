@@ -30,7 +30,7 @@ pub use io::{Reader, ReaderBuilder, Writer, WriterBuilder};
 pub use license::{ffmpeg_libraries, LibraryInfo};
 pub use location::{Location, Url};
 pub use mux::{Muxer, MuxerBuilder};
-pub use options::Options;
+pub use options::{CodecOptions, MuxerOptions, Options, ReaderOptions};
 pub use packet::Packet;
 pub use resize::Resize;
 pub use subtitle::{SubtitleCue, SubtitleFormat};

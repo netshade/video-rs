@@ -14,7 +14,7 @@ use ffmpeg_next::{Codec, Dictionary, Error as FFError, StreamMut};
 use crate::error::Error;
 use crate::ffi;
 use crate::location::Location;
-use crate::options::Options;
+use crate::options::{MuxerOptions, Options, ReaderOptions};
 use crate::packet::Packet;
 use crate::stream::StreamInfo;
 
@@ -25,20 +25,14 @@ type Result<T> = std::result::Result<T, Error>;
 /// # Example
 ///
 /// ```ignore
-/// let mut options = HashMap::new();
-/// options.insert(
-///     "rtsp_transport".to_string(),
-///     "tcp".to_string(),
-/// );
-///
-/// let mut reader = ReaderBuilder::new(Path::new("my_file.mp4"))
-///     .with_options(&options.into())
+/// let reader = ReaderBuilder::new(Path::new("rtsp://example.com/stream"))
+///     .with_options(&ReaderOptions::preset_rtsp_transport_tcp())
 ///     .build()
 ///     .unwrap();
 /// ```
 pub struct ReaderBuilder<'a> {
     source: Location,
-    options: Option<&'a Options>,
+    options: Option<&'a ReaderOptions>,
 }
 
 impl<'a> ReaderBuilder<'a> {
@@ -58,8 +52,8 @@ impl<'a> ReaderBuilder<'a> {
     ///
     /// # Arguments
     ///
-    /// * `options` - Options to pass on to input.
-    pub fn with_options(mut self, options: &'a Options) -> Self {
+    /// * `options` - Reader options to pass on to input.
+    pub fn with_options(mut self, options: &'a ReaderOptions) -> Self {
         self.options = Some(options);
         self
     }
@@ -204,7 +198,7 @@ pub trait Write: private::Write + private::Output {}
 pub struct WriterBuilder<'a> {
     destination: Location,
     format: Option<&'a str>,
-    options: Option<&'a Options>,
+    options: Option<&'a MuxerOptions>,
 }
 
 impl<'a> WriterBuilder<'a> {
@@ -231,43 +225,37 @@ impl<'a> WriterBuilder<'a> {
         self
     }
 
-    /// Specify options for the backend.
+    /// Specify muxer options for the container format.
+    ///
+    /// These options (like `movflags` for MP4) are applied when writing the
+    /// container header via `avformat_write_header()`.
     ///
     /// # Arguments
     ///
-    /// * `options` - Options to pass on to output.
-    pub fn with_options(mut self, options: &'a Options) -> Self {
+    /// * `options` - Muxer options to pass on to output.
+    pub fn with_muxer_options(mut self, options: &'a MuxerOptions) -> Self {
         self.options = Some(options);
         self
     }
 
     /// Build [`Writer`].
+    ///
+    /// Note: Muxer options (like `movflags`) are stored and applied at header
+    /// write time via `write_header()`, not at format context creation. This
+    /// is because FFmpeg expects format-level options to be passed to
+    /// `avformat_write_header()`, not to `avio_open2()`.
     pub fn build(self) -> Result<Writer> {
-        match (self.format, self.options) {
-            (None, None) => Ok(Writer {
-                output: ffmpeg::format::output(&self.destination.as_path())?,
-                destination: self.destination,
-            }),
-            (Some(format), None) => Ok(Writer {
-                output: ffmpeg::format::output_as(&self.destination.as_path(), format)?,
-                destination: self.destination,
-            }),
-            (None, Some(options)) => Ok(Writer {
-                output: ffmpeg::format::output_with(
-                    &self.destination.as_path(),
-                    options.to_dict(),
-                )?,
-                destination: self.destination,
-            }),
-            (Some(format), Some(options)) => Ok(Writer {
-                output: ffmpeg::format::output_as_with(
-                    &self.destination.as_path(),
-                    format,
-                    options.to_dict(),
-                )?,
-                destination: self.destination,
-            }),
-        }
+        // Create format context without options - options are applied at write_header time
+        let output = match self.format {
+            None => ffmpeg::format::output(&self.destination.as_path())?,
+            Some(format) => ffmpeg::format::output_as(&self.destination.as_path(), format)?,
+        };
+
+        Ok(Writer {
+            output,
+            destination: self.destination,
+            muxer_options: self.options.cloned(),
+        })
     }
 }
 
@@ -292,6 +280,10 @@ impl<'a> WriterBuilder<'a> {
 pub struct Writer {
     pub destination: Location,
     pub(crate) output: AvOutput,
+    /// Muxer options to pass to write_header (e.g., movflags for fragmented MP4).
+    /// These are stored here because they must be applied at header write time,
+    /// not at format context creation time.
+    pub(crate) muxer_options: Option<MuxerOptions>,
 }
 
 impl Writer {
@@ -322,6 +314,21 @@ impl Writer {
         codec: Option<Codec>,
     ) -> std::result::Result<StreamMut<'_>, FFError> {
         self.output.add_stream(codec)
+    }
+
+    /// Write the file header, applying any muxer options.
+    ///
+    /// Muxer options (like `movflags` for fragmented MP4) are applied here
+    /// via `avformat_write_header()`, which is where FFmpeg expects them.
+    pub fn write_header(&mut self) -> Result<()> {
+        if let Some(options) = self.muxer_options.take() {
+            self.output
+                .write_header_with(options.to_dict())
+                .map(|_| ())
+                .map_err(Error::BackendError)
+        } else {
+            self.output.write_header().map_err(Error::BackendError)
+        }
     }
 
     /// Set flush_packets on the format context.
@@ -566,7 +573,16 @@ pub(crate) mod private {
         type Out = ();
 
         fn write_header(&mut self) -> Result<()> {
-            Ok(self.output.write_header()?)
+            // Apply muxer options (like movflags) at header write time
+            if let Some(options) = self.muxer_options.take() {
+                self.output
+                    .write_header_with(options.to_dict())
+                    .map(|_| ())
+                    .map_err(Error::BackendError)?;
+            } else {
+                self.output.write_header().map_err(Error::BackendError)?;
+            }
+            Ok(())
         }
 
         fn write(&mut self, packet: &mut AvPacket) -> Result<()> {

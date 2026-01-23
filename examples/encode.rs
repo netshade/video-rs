@@ -7,6 +7,7 @@ use ndarray::Array3;
 use video_rs::encode::{EncoderBuilder, Settings};
 use video_rs::subtitle::{SubtitleCue, SubtitleFormat};
 use video_rs::time::Time;
+use video_rs::MuxerOptions;
 
 use clap::{Parser, ValueEnum};
 
@@ -93,6 +94,10 @@ impl Args {
         }
     }
 
+    fn effective_codec(&self) -> Codec {
+        self.codec.clone().unwrap_or_else(|| self.detected_codec())
+    }
+
     fn subtitle_format(&self) -> SubtitleFormat {
         let ext = self
             .filename
@@ -135,15 +140,22 @@ fn main() {
     let settings = args.settings();
     let subtitle_format = args.subtitle_format();
 
-    let mut encoder = EncoderBuilder::new(args.filename.as_path(), settings)
+    let options = MuxerOptions::preset_fragmented_mp4();
+    let mut builder = EncoderBuilder::new(args.filename.as_path(), settings)
         .with_subtitle_track(subtitle_format)
         .subtitle_language("eng")
-        .build()
-        .expect("failed to create encoder");
+        .interleaved();
+
+    // Apply fragmented MP4 options for H264 output (enables playback during encoding)
+    if matches!(args.effective_codec(), Codec::H264) {
+        builder = builder.with_muxer_options(&options);
+    }
+    let mut encoder = builder.build().expect("failed to create encoder");
+    encoder.set_flush_packets(true);
 
     let duration: Time = Time::from_nth_of_a_second(24);
     let mut position = Time::zero();
-
+    encoder.write_header().expect("Should write header");
     // At 24fps, 256 frames = ~10.67 seconds of video
     for i in 0..256 {
         // This will create a smooth rainbow animation video!
@@ -152,7 +164,6 @@ fn main() {
         encoder
             .encode(&frame, position)
             .expect("failed to encode frame");
-
         // Add a subtitle every second (every 24 frames at 24fps)
         if i % 24 == 0 {
             let second = i / 24;
@@ -164,6 +175,7 @@ fn main() {
                     Time::from_secs(1.0),
                 ))
                 .expect("failed to encode subtitle");
+            encoder.flush_output().expect("Failed to flush output");
         }
 
         // Update the current position and add the inter-frame duration to it.

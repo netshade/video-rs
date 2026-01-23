@@ -16,7 +16,7 @@ use crate::frame::{RawFrame, FRAME_PIXEL_FORMAT};
 use crate::hwaccel::{HardwareAccelerationContext, HardwareAccelerationDeviceType};
 use crate::io::{Reader, ReaderBuilder};
 use crate::location::Location;
-use crate::options::Options;
+use crate::options::ReaderOptions;
 use crate::packet::Packet;
 use crate::resize::Resize;
 use crate::time::Time;
@@ -29,7 +29,7 @@ static HWACCEL_PIXEL_FORMAT: AvPixel = AvPixel::NV12;
 /// Builds a [`Decoder`].
 pub struct DecoderBuilder<'a> {
     source: Location,
-    options: Option<&'a Options>,
+    options: Option<&'a ReaderOptions>,
     resize: Option<Resize>,
     hardware_acceleration_device_type: Option<HardwareAccelerationDeviceType>,
 }
@@ -47,10 +47,10 @@ impl<'a> DecoderBuilder<'a> {
         }
     }
 
-    /// Set custom options. Options are applied to the input.
+    /// Set reader options. Options are applied to the input.
     ///
-    /// * `options` - Custom options.
-    pub fn with_options(mut self, options: &'a Options) -> Self {
+    /// * `options` - Reader options for input configuration (e.g., RTSP transport).
+    pub fn with_options(mut self, options: &'a ReaderOptions) -> Self {
         self.options = Some(options);
         self
     }

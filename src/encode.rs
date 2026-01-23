@@ -31,7 +31,7 @@ use crate::io::private::Write;
 use crate::io::{Writer, WriterBuilder};
 use crate::location::Location;
 use crate::mktag;
-use crate::options::Options;
+use crate::options::{CodecOptions, MuxerOptions};
 use crate::subtitle::{SubtitleCue, SubtitleEncoderState, SubtitleFormat};
 use crate::time::Time;
 
@@ -41,7 +41,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct EncoderBuilder<'a> {
     destination: Location,
     settings: Settings,
-    options: Option<&'a Options>,
+    muxer_options: Option<&'a MuxerOptions>,
     format: Option<&'a str>,
     interleaved: bool,
     subtitle_format: Option<SubtitleFormat>,
@@ -57,7 +57,7 @@ impl<'a> EncoderBuilder<'a> {
         Self {
             destination: destination.into(),
             settings,
-            options: None,
+            muxer_options: None,
             format: None,
             interleaved: false,
             subtitle_format: None,
@@ -65,13 +65,16 @@ impl<'a> EncoderBuilder<'a> {
         }
     }
 
-    /// Set the output options for the encoder.
+    /// Set the muxer options for the container format.
+    ///
+    /// These options (like `movflags` for MP4) are applied when writing the
+    /// container header via `avformat_write_header()`.
     ///
     /// # Arguments
     ///
-    /// * `options` - The output options.
-    pub fn with_options(mut self, options: &'a Options) -> Self {
-        self.options = Some(options);
+    /// * `options` - The muxer options.
+    pub fn with_muxer_options(mut self, options: &'a MuxerOptions) -> Self {
+        self.muxer_options = Some(options);
         self
     }
 
@@ -117,8 +120,8 @@ impl<'a> EncoderBuilder<'a> {
     /// Build an [`Encoder`].
     pub fn build(self) -> Result<Encoder> {
         let mut writer_builder = WriterBuilder::new(self.destination);
-        if let Some(options) = self.options {
-            writer_builder = writer_builder.with_options(options);
+        if let Some(options) = self.muxer_options {
+            writer_builder = writer_builder.with_muxer_options(options);
         }
         if let Some(format) = self.format {
             writer_builder = writer_builder.with_format(format);
@@ -433,7 +436,7 @@ impl Encoder {
         // that we should never get in trouble.
         encoder.set_time_base(TIME_BASE);
 
-        let encoder = encoder.open_with(settings.options().to_dict())?;
+        let encoder = encoder.open_with(settings.codec_options().to_dict())?;
         let encoder_time_base = ffi::get_encoder_time_base(&encoder);
 
         writer_stream.set_parameters(&encoder);
@@ -665,7 +668,7 @@ pub struct Settings {
     keyframe_interval: u64,
     frame_rate: i32,
     metadata: Option<HashMap<String, String>>,
-    options: Options,
+    codec_options: CodecOptions,
 }
 
 impl std::fmt::Debug for Settings {
@@ -691,7 +694,7 @@ impl std::fmt::Debug for Settings {
             .field("keyframe_interval", &self.keyframe_interval)
             .field("frame_rate", &self.frame_rate)
             .field("metadata", &metadata)
-            .field("options", &self.options)
+            .field("codec_options", &self.codec_options)
             .finish()
     }
 }
@@ -728,10 +731,10 @@ impl Settings {
         realtime: bool,
         metadata: Option<HashMap<String, String>>,
     ) -> Settings {
-        let options = if realtime {
-            Options::preset_h264_realtime()
+        let codec_options = if realtime {
+            CodecOptions::preset_h264_realtime()
         } else {
-            Options::preset_h264()
+            CodecOptions::preset_h264()
         };
         Self::new(
             width,
@@ -744,7 +747,7 @@ impl Settings {
             Self::KEY_FRAME_INTERVAL,
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
-            options,
+            codec_options,
             metadata,
         )
     }
@@ -758,17 +761,17 @@ impl Settings {
     /// * `width` - The width of the video stream.
     /// * `height` - The height of the video stream.
     /// * `pixel_format` - The desired pixel format for the video stream.
-    /// * `options` - Custom H264 encoding options.
+    /// * `codec_options` - Custom H264 codec options.
     ///
     /// # Return value
     ///
-    /// A `Settings` instance with the specified configuration.+
+    /// A `Settings` instance with the specified configuration.
     #[cfg(feature = "h264")]
     pub fn preset_h264_custom(
         width: usize,
         height: usize,
         pixel_format: PixelFormat,
-        options: Options,
+        codec_options: CodecOptions,
         metadata: Option<HashMap<String, String>>,
     ) -> Settings {
         Self::new(
@@ -782,7 +785,7 @@ impl Settings {
             Self::KEY_FRAME_INTERVAL,
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::H264, Some("libx264")),
-            options,
+            codec_options,
             metadata,
         )
     }
@@ -794,7 +797,7 @@ impl Settings {
     pub fn preset_vp9_yuv420p(
         width: usize,
         height: usize,
-        options: Option<Options>,
+        codec_options: Option<CodecOptions>,
         metadata: Option<HashMap<String, String>>,
     ) -> Settings {
         Self::new(
@@ -808,7 +811,7 @@ impl Settings {
             Self::KEY_FRAME_INTERVAL,
             Self::FRAME_RATE,
             Self::find_codec(AvCodecId::VP9, Some("libvpx-vp9")),
-            options.unwrap_or_default(),
+            codec_options.unwrap_or_default(),
             metadata,
         )
     }
@@ -820,10 +823,10 @@ impl Settings {
     pub fn preset_vp9_yuv420p_realtime(
         width: usize,
         height: usize,
-        options: Option<Options>,
+        codec_options: Option<CodecOptions>,
         metadata: Option<HashMap<String, String>>,
     ) -> Settings {
-        let mut opts = options.unwrap_or_default();
+        let mut opts = codec_options.unwrap_or_default();
         opts.set("deadline", "realtime");
         opts.set("row-mt", "1");
         opts.set("cpu-used", "8");
@@ -854,7 +857,7 @@ impl Settings {
         keyframe_interval: u64,
         frame_rate: i32,
         codec: Option<AvCodec>,
-        options: Options,
+        codec_options: CodecOptions,
         metadata: Option<HashMap<String, String>>,
     ) -> Settings {
         Self {
@@ -869,7 +872,7 @@ impl Settings {
             frame_rate,
             codec,
             metadata,
-            options,
+            codec_options,
         }
     }
 
@@ -906,9 +909,9 @@ impl Settings {
         encoder.set_frame_rate(Some((self.frame_rate, 1)));
     }
 
-    /// Get encoder options.
-    fn options(&self) -> &Options {
-        &self.options
+    /// Get codec options.
+    fn codec_options(&self) -> &CodecOptions {
+        &self.codec_options
     }
 }
 

@@ -168,6 +168,7 @@ pub struct Encoder {
     source_height: u32,
     source_format: PixelFormat,
     frame_count: u64,
+    frame_rate: i32,
     have_written_header: bool,
     have_written_trailer: bool,
     subtitle_state: Option<SubtitleEncoderState>,
@@ -216,6 +217,67 @@ impl Encoder {
         self.encode_raw(frame)
     }
 
+    /// Encode a frame directly from a raw buffer.
+    ///
+    /// This is more efficient than `encode()` when you already have raw pixel data,
+    /// as it avoids ndarray construction overhead and bounds checking.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - Raw pixel data in the source format specified in Settings.
+    /// * `source_timestamp` - Frame timestamp.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // For BGRA input (4 bytes per pixel):
+    /// let bgra_buffer: &[u8] = ...; // width * height * 4 bytes
+    /// encoder.encode_buffer(bgra_buffer, timestamp)?;
+    /// ```
+    pub fn encode_buffer(&mut self, buffer: &[u8], source_timestamp: Time) -> Result<()> {
+        // Calculate expected buffer size based on pixel format
+        let bytes_per_pixel = match self.source_format {
+            AvPixel::BGRA | AvPixel::RGBA | AvPixel::ARGB | AvPixel::ABGR => 4,
+            AvPixel::BGR24 | AvPixel::RGB24 => 3,
+            AvPixel::GRAY8 => 1,
+            AvPixel::GRAY16LE | AvPixel::GRAY16BE => 2,
+            // For other formats, skip the size check
+            _ => 0,
+        };
+
+        if bytes_per_pixel > 0 {
+            let expected_size =
+                self.source_width as usize * self.source_height as usize * bytes_per_pixel;
+            if buffer.len() < expected_size {
+                error!(
+                    "Buffer too small: expected {} bytes for {}x{} {:?}, got {} bytes",
+                    expected_size,
+                    self.source_width,
+                    self.source_height,
+                    self.source_format,
+                    buffer.len()
+                );
+                return Err(Error::InvalidFrameFormat);
+            }
+        }
+
+        let mut frame = ffi::convert_buffer_to_frame(
+            buffer,
+            self.source_width,
+            self.source_height,
+            self.source_format.into(),
+        )
+        .map_err(Error::BackendError)?;
+
+        frame.set_pts(
+            source_timestamp
+                .aligned_with_rational(self.encoder_time_base)
+                .into_value(),
+        );
+
+        self.encode_raw(frame)
+    }
+
     /// Encode a single raw frame.
     ///
     /// # Arguments
@@ -244,8 +306,8 @@ impl Encoder {
             self.have_written_header = true;
         }
 
-        // Reformat frame to target pixel format.
         let mut frame = self.scale(frame)?;
+
         // Producer key frame every once in a while
         if self.frame_count.is_multiple_of(self.keyframe_interval) {
             frame.set_kind(AvFrameType::I);
@@ -254,6 +316,7 @@ impl Encoder {
         self.encoder
             .send_frame(&frame)
             .map_err(Error::BackendError)?;
+
         // Increment frame count regardless of whether or not frame is written, see
         // https://github.com/oddity-ai/video-rs/issues/46.
         self.frame_count += 1;
@@ -293,10 +356,10 @@ impl Encoder {
     /// ))?;
     /// ```
     pub fn encode_subtitle(&mut self, cue: &SubtitleCue) -> Result<()> {
-        let state = self
-            .subtitle_state
-            .as_ref()
-            .ok_or(Error::SubtitleTrackNotConfigured)?;
+        // Ensure subtitle track is configured
+        if self.subtitle_state.is_none() {
+            return Err(Error::SubtitleTrackNotConfigured);
+        }
 
         // Write file header if we hadn't done that yet.
         if !self.have_written_header {
@@ -304,21 +367,59 @@ impl Encoder {
             self.have_written_header = true;
         }
 
+        // Check for out-of-order subtitles and fill gaps
+        if let Some(ref state) = self.subtitle_state {
+            if let Some(last_end) = state.last_subtitle_end {
+                let cue_start_secs = cue.start.as_secs_f64();
+                let last_end_secs = last_end.as_secs_f64();
+
+                if cue_start_secs < last_end_secs {
+                    // Out of order - new subtitle starts before previous one ended
+                    return Err(Error::SubtitleOutOfOrder);
+                }
+
+                // Check if there's a gap to fill
+                if cue_start_secs > last_end_secs {
+                    let gap_duration = Time::from_secs_f64(cue_start_secs - last_end_secs);
+                    // Write empty filler packet to cover the gap
+                    self.write_subtitle_packet("", last_end, gap_duration)?;
+                }
+            }
+        }
+
+        // Write the actual subtitle
+        self.write_subtitle_packet(&cue.text, cue.start, cue.duration)?;
+
+        // Update tracking state
+        if let Some(ref mut state) = self.subtitle_state {
+            let end_time = cue.start.aligned_with(cue.duration).add();
+            state.last_subtitle_end = Some(end_time);
+        }
+
+        Ok(())
+    }
+
+    /// Internal method to write a subtitle packet with the given text, start time, and duration.
+    fn write_subtitle_packet(&mut self, text: &str, start: Time, duration: Time) -> Result<()> {
+        let state = self
+            .subtitle_state
+            .as_ref()
+            .ok_or(Error::SubtitleTrackNotConfigured)?;
+
         // Convert start time to time base units for PTS
-        let pts_value = cue
-            .start
+        let pts_value = start
             .aligned_with_rational(state.time_base)
             .into_value()
             .unwrap_or(0);
 
         // Duration in milliseconds (since time_base is 1/1000)
-        let duration_ms = (cue.duration.as_secs_f64() * 1000.0).round() as i64;
+        let duration_ms = (duration.as_secs_f64() * 1000.0).round() as i64;
 
         // Create subtitle data packet with format-specific encoding
         let packet_data = match state.format {
             SubtitleFormat::MovText => {
                 // mov_text (tx3g) format requires a 16-bit big-endian length prefix
-                let text_bytes = cue.text.as_bytes();
+                let text_bytes = text.as_bytes();
                 let len = text_bytes.len() as u16;
                 let mut data = Vec::with_capacity(2 + text_bytes.len());
                 data.extend_from_slice(&len.to_be_bytes());
@@ -327,7 +428,7 @@ impl Encoder {
             }
             _ => {
                 // Other formats: use raw text for now
-                cue.text.as_bytes().to_vec()
+                text.as_bytes().to_vec()
             }
         };
 
@@ -539,6 +640,7 @@ impl Encoder {
             source_height,
             source_format: settings.source_format,
             frame_count: 0,
+            frame_rate: settings.frame_rate,
             have_written_header: false,
             have_written_trailer: false,
             subtitle_state,
@@ -596,6 +698,13 @@ impl Encoder {
         packet.set_stream(self.writer_stream_index);
         packet.set_position(-1);
         packet.rescale_ts(self.encoder_time_base, self.stream_time_base());
+        // Calculate frame duration based on frame rate and stream time base
+        // duration = stream_tb.denominator / (frame_rate * stream_tb.numerator)
+        let stream_tb = self.stream_time_base();
+        let frame_duration =
+            stream_tb.denominator() as i64 / (self.frame_rate as i64 * stream_tb.numerator() as i64);
+        packet.set_duration(frame_duration);
+
         if self.interleaved {
             self.writer.write_interleaved(&mut packet)?;
         } else {

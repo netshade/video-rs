@@ -333,6 +333,65 @@ pub fn convert_ndarray_to_frame_rgb24(frame_array: &FrameArray) -> Result<Frame,
     convert_ndarray_to_frame(frame_array, AVPixelFormat::AV_PIX_FMT_RGB24)
 }
 
+/// Converts a raw buffer to a video `AVFrame` for ffmpeg.
+///
+/// This is more efficient than using ndarray when you already have raw bytes,
+/// as it avoids the overhead of ndarray construction and bounds checking.
+///
+/// # Arguments
+///
+/// * `buffer` - Raw pixel data buffer.
+/// * `width` - Frame width in pixels.
+/// * `height` - Frame height in pixels.
+/// * `pixel_format` - Pixel format of the buffer data.
+///
+/// # Return value
+///
+/// An ffmpeg-native `Frame`.
+pub fn convert_buffer_to_frame(
+    buffer: &[u8],
+    width: u32,
+    height: u32,
+    pixel_format: AVPixelFormat,
+) -> Result<Frame, Error> {
+    unsafe {
+        // Temporary frame structure to place correctly formatted data and linesize stuff in
+        let mut frame_tmp = Frame::empty();
+        let frame_tmp_ptr = frame_tmp.as_mut_ptr();
+
+        // This does not copy the data, but it sets the frame_tmp data and linesize pointers
+        let bytes_copied = av_image_fill_arrays(
+            (*frame_tmp_ptr).data.as_ptr() as *mut *mut u8,
+            (*frame_tmp_ptr).linesize.as_ptr() as *mut i32,
+            buffer.as_ptr(),
+            pixel_format,
+            width as i32,
+            height as i32,
+            1,
+        );
+
+        if bytes_copied < 0 {
+            return Err(Error::from(bytes_copied));
+        }
+
+        let mut frame = Frame::new(pixel_format.into(), width, height);
+        let frame_ptr = frame.as_mut_ptr();
+
+        // Do the actual copying
+        av_image_copy(
+            (*frame_ptr).data.as_ptr() as *mut *mut u8,
+            (*frame_ptr).linesize.as_ptr() as *mut i32,
+            (*frame_tmp_ptr).data.as_ptr() as *mut *const u8,
+            (*frame_tmp_ptr).linesize.as_ptr(),
+            pixel_format,
+            width as i32,
+            height as i32,
+        );
+
+        Ok(frame)
+    }
+}
+
 /// Converts an RGB24 video `AVFrame` produced by ffmpeg to an `ndarray`.
 ///
 /// # Arguments

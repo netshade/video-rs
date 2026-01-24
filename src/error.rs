@@ -17,6 +17,7 @@ pub enum Error {
     UninitializedCodec,
     UnsupportedCodecHardwareAccelerationDeviceType,
     SubtitleTrackNotConfigured,
+    SubtitleOutOfOrder,
     BackendError(FfmpegError),
 }
 
@@ -34,6 +35,7 @@ impl std::error::Error for Error {
             Error::UninitializedCodec => None,
             Error::UnsupportedCodecHardwareAccelerationDeviceType => None,
             Error::SubtitleTrackNotConfigured => None,
+            Error::SubtitleOutOfOrder => None,
             Error::BackendError(ref internal) => Some(internal),
         }
     }
@@ -68,6 +70,12 @@ impl std::fmt::Display for Error {
             }
             Error::SubtitleTrackNotConfigured => {
                 write!(f, "subtitle track not configured on encoder")
+            }
+            Error::SubtitleOutOfOrder => {
+                write!(
+                    f,
+                    "subtitle submitted out of time order (starts before previous subtitle ends)"
+                )
             }
             Error::BackendError(ref internal) => internal.fmt(f),
         }

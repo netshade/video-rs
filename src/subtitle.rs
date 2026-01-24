@@ -81,6 +81,9 @@ pub(crate) struct SubtitleEncoderState {
     pub(crate) time_base: AvRational,
     /// The subtitle format used for format-specific packet encoding.
     pub(crate) format: SubtitleFormat,
+    /// Tracks the end time of the last subtitle (start + duration).
+    /// Used to detect gaps and generate filler packets.
+    pub(crate) last_subtitle_end: Option<Time>,
 }
 
 impl SubtitleEncoderState {
@@ -89,6 +92,7 @@ impl SubtitleEncoderState {
             stream_index,
             time_base,
             format,
+            last_subtitle_end: None,
         }
     }
 }

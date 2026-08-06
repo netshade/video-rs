@@ -240,7 +240,10 @@ pub struct Options(AvDictionary<'static>);
 
 impl Options {
     /// Creates options such that ffmpeg will prefer TCP transport when reading RTSP stream.
-    #[deprecated(since = "0.9.0", note = "Use ReaderOptions::preset_rtsp_transport_tcp() instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use ReaderOptions::preset_rtsp_transport_tcp() instead"
+    )]
     pub fn preset_rtsp_transport_tcp() -> Self {
         let mut opts = AvDictionary::new();
         opts.set("rtsp_transport", "tcp");
@@ -248,7 +251,10 @@ impl Options {
     }
 
     /// Creates options for fragmented MP4 output.
-    #[deprecated(since = "0.9.0", note = "Use MuxerOptions::preset_fragmented_mp4() instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use MuxerOptions::preset_fragmented_mp4() instead"
+    )]
     pub fn preset_fragmented_mov() -> Self {
         let mut opts = AvDictionary::new();
         opts.set(

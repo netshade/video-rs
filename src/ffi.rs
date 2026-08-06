@@ -1,7 +1,5 @@
 extern crate ffmpeg_next as ffmpeg;
 
-use std::rc::Rc;
-
 #[cfg(feature = "ndarray")]
 use ndarray::Array3;
 

@@ -8,6 +8,7 @@ use ffmpeg::codec::encoder::video::Video as AvVideo;
 use ffmpeg::codec::flag::Flags as AvCodecFlags;
 use ffmpeg::codec::packet::Packet as AvPacket;
 use ffmpeg::codec::Context as AvContext;
+use ffmpeg::media::Type as AvMediaType;
 use ffmpeg::software::scaling::context::Context as AvScaler;
 use ffmpeg::util::error::EAGAIN;
 use ffmpeg::util::mathematics::rescale::TIME_BASE;
@@ -577,12 +578,11 @@ impl Encoder {
             // Set codec parameters directly on the stream
             {
                 let mut parameters = subtitle_stream.parameters();
-                // Safety: We need to set the codec_id on the parameters
-                unsafe {
-                    (*parameters.as_mut_ptr()).codec_type =
-                        ffmpeg::ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE;
-                    (*parameters.as_mut_ptr()).codec_id = subtitle_codec_id.into();
+                parameters.set_medium(AvMediaType::Subtitle);
+                parameters.set_id(subtitle_codec_id);
 
+                // Safety: `codec_tag` and `extradata` have no safe setters.
+                unsafe {
                     // Set codec_tag to 'tx3g' for MOV_TEXT to ensure FFmpeg's MOV muxer
                     // uses the 'sbtl' handler type instead of 'text'. This is required
                     // for QuickTime, VLC, and other Apple-compatible players to recognize

@@ -109,20 +109,36 @@ impl Reader {
     /// let mut packet = reader.read(stream).unwrap();
     /// ```
     pub fn read(&mut self, stream_index: usize) -> Result<Packet> {
-        let mut error_count = 0;
+        // A demuxer can resync past a corrupt packet, so those are retried. Bound
+        // the retries so a stream that never resyncs cannot spin forever.
+        const MAX_CORRUPT_PACKETS: u32 = 3;
+
+        let time_base = self
+            .input
+            .stream(stream_index)
+            .ok_or(AvError::StreamNotFound)?
+            .time_base();
+
+        let mut corrupt_packets = 0;
         loop {
-            match self.input.packets().next() {
-                Some((stream, packet)) => {
-                    if stream.index() == stream_index {
-                        return Ok(Packet::new(packet, stream.time_base()));
+            let mut packet = AvPacket::empty();
+            match packet.read(&mut self.input) {
+                Ok(()) => {
+                    corrupt_packets = 0;
+                    if packet.stream() == stream_index {
+                        return Ok(Packet::new(packet, time_base));
                     }
                 }
-                None => {
-                    error_count += 1;
-                    if error_count > 3 {
-                        return Err(Error::ReadExhausted);
+                Err(AvError::InvalidData) => {
+                    corrupt_packets += 1;
+                    if corrupt_packets > MAX_CORRUPT_PACKETS {
+                        return Err(Error::BackendError(AvError::InvalidData));
                     }
                 }
+                Err(AvError::Eof) => return Err(Error::ReadExhausted),
+                // Any other error is latched into the `AVIOContext` and returned
+                // by every subsequent read, so surface it instead of retrying.
+                Err(e) => return Err(Error::BackendError(e)),
             }
         }
     }

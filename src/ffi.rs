@@ -7,6 +7,7 @@ use ffmpeg::codec::codec::Codec;
 use ffmpeg::codec::context::Context;
 use ffmpeg::encoder::video::Video;
 use ffmpeg::format::context::Output;
+use ffmpeg::util::error::{EINVAL, ENOMEM};
 use ffmpeg::util::frame::video::Video as Frame;
 use ffmpeg::{Error, Rational};
 
@@ -39,7 +40,7 @@ use ffmpeg::ffi::*;
 pub fn output_raw(format: &str) -> Result<Output, Error> {
     unsafe {
         let mut output_ptr = std::ptr::null_mut();
-        let format = std::ffi::CString::new(format).unwrap();
+        let format = std::ffi::CString::new(format).map_err(|_| Error::Other { errno: EINVAL })?;
         match avformat_alloc_output_context2(
             &mut output_ptr,
             std::ptr::null_mut(),
@@ -59,7 +60,7 @@ pub fn output_raw(format: &str) -> Result<Output, Error> {
 /// # Arguments
 ///
 /// * `output` - Output context to start write on.
-pub fn output_raw_buf_start(output: &mut Output) {
+pub fn output_raw_buf_start(output: &mut Output) -> Result<(), Error> {
     unsafe {
         // Here we initialize a raw pointer (mutable) as nullptr initially. We then call the
         // `avio_open_dyn_buf` which expects a ptr ptr, and place the result in p. In case of
@@ -68,10 +69,9 @@ pub fn output_raw_buf_start(output: &mut Output) {
         match avio_open_dyn_buf((&mut p) as *mut *mut AVIOContext) {
             0 => {
                 (*output.as_mut_ptr()).pb = p;
+                Ok(())
             }
-            _ => {
-                panic!("Failed to open dynamic buffer for output context.");
-            }
+            e => Err(Error::from(e)),
         }
     }
 }
@@ -94,6 +94,12 @@ pub fn output_raw_buf_end(output: &mut Output) -> Vec<u8> {
 
         // Reset the `pb` field or `avformat_close` will try to free it!
         ((*output.as_mut_ptr()).pb) = std::ptr::null_mut::<AVIOContext>();
+
+        // `avio_close_dyn_buf` leaves `buffer_raw` null when there was no dyn buf
+        // to close, which `Drop` hits on every writer that never began a write.
+        if buffer_raw.is_null() {
+            return Vec::new();
+        }
 
         // Create a Rust `Vec` from the buffer (copying).
         let buffer = std::slice::from_raw_parts(buffer_raw, buffer_size).to_vec();
@@ -125,14 +131,21 @@ pub fn output_raw_packetized_buf_start(
     output: &mut Output,
     packet_buffer: &mut Vec<Vec<u8>>,
     max_packet_size: usize,
-) {
+) -> Result<(), Error> {
+    let max_packet_size_c: std::ffi::c_int = max_packet_size
+        .try_into()
+        .map_err(|_| Error::Other { errno: EINVAL })?;
+
     unsafe {
         let buffer = av_malloc(max_packet_size) as *mut u8;
+        if buffer.is_null() {
+            return Err(Error::Other { errno: ENOMEM });
+        }
 
         // Create a custom IO context around our buffer.
         let io: *mut AVIOContext = avio_alloc_context(
             buffer,
-            max_packet_size.try_into().unwrap(),
+            max_packet_size_c,
             // Set stream to WRITE.
             1,
             // Pass on a pointer *UNSAFE* to the packet buffer, assuming the packet buffer will live
@@ -152,13 +165,19 @@ pub fn output_raw_packetized_buf_start(
             // No `seek`.
             None,
         );
+        if io.is_null() {
+            av_free(buffer as *mut std::ffi::c_void);
+            return Err(Error::Other { errno: ENOMEM });
+        }
 
         // Setting `max_packet_size` will let the underlying IO stream know that this buffer must be
         // treated as packetized.
-        (*io).max_packet_size = max_packet_size.try_into().unwrap();
+        (*io).max_packet_size = max_packet_size_c;
 
         // Assign IO to output context.
         (*output.as_mut_ptr()).pb = io;
+
+        Ok(())
     }
 }
 
@@ -171,6 +190,9 @@ pub fn output_raw_packetized_buf_start(
 pub fn output_raw_packetized_buf_end(output: &mut Output) {
     unsafe {
         let output_pb = (*output.as_mut_ptr()).pb;
+        if output_pb.is_null() {
+            return;
+        }
 
         // One last flush (might incur write, most likely won't).
         avio_flush(output_pb);

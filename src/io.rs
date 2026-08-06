@@ -343,7 +343,10 @@ impl Writer {
                 .map(|_| ())
                 .map_err(Error::BackendError)
         } else {
-            self.output.write_header().map_err(Error::BackendError)
+            self.output
+                .write_header()
+                .map(|_| ())
+                .map_err(Error::BackendError)
         }
     }
 
@@ -437,8 +440,8 @@ impl BufWriter {
         BufWriterBuilder::new(format).build()
     }
 
-    fn begin_write(&mut self) {
-        ffi::output_raw_buf_start(&mut self.output);
+    fn begin_write(&mut self) -> Result<()> {
+        ffi::output_raw_buf_start(&mut self.output).map_err(Error::BackendError)
     }
 
     fn end_write(&mut self) -> Buf {
@@ -528,7 +531,7 @@ impl PacketizedBufWriter {
         PacketizedBufWriterBuilder::new(format).build()
     }
 
-    fn begin_write(&mut self) {
+    fn begin_write(&mut self) -> Result<()> {
         ffi::output_raw_packetized_buf_start(
             &mut self.output,
             // Note: `ffi::output_raw_packetized_bug_start` requires that this value lives until
@@ -537,7 +540,8 @@ impl PacketizedBufWriter {
             // (see the implementation) of `Write` for `PacketizedBufWriter`.
             &mut self.buffers,
             Self::PACKET_SIZE,
-        );
+        )
+        .map_err(Error::BackendError)
     }
 
     fn end_write(&mut self) {
@@ -620,27 +624,27 @@ pub(crate) mod private {
         type Out = Buf;
 
         fn write_header(&mut self) -> Result<Buf> {
-            self.begin_write();
+            self.begin_write()?;
             self.output.write_header_with(self.options.to_dict())?;
             Ok(self.end_write())
         }
 
         fn write(&mut self, packet: &mut AvPacket) -> Result<Buf> {
-            self.begin_write();
+            self.begin_write()?;
             packet.write(&mut self.output)?;
             ffi::flush_output(&mut self.output)?;
             Ok(self.end_write())
         }
 
         fn write_interleaved(&mut self, packet: &mut AvPacket) -> Result<Buf> {
-            self.begin_write();
+            self.begin_write()?;
             packet.write_interleaved(&mut self.output)?;
             ffi::flush_output(&mut self.output)?;
             Ok(self.end_write())
         }
 
         fn write_trailer(&mut self) -> Result<Buf> {
-            self.begin_write();
+            self.begin_write()?;
             self.output.write_trailer()?;
             Ok(self.end_write())
         }
@@ -650,14 +654,14 @@ pub(crate) mod private {
         type Out = Bufs;
 
         fn write_header(&mut self) -> Result<Bufs> {
-            self.begin_write();
+            self.begin_write()?;
             self.output.write_header_with(self.options.to_dict())?;
             self.end_write();
             Ok(self.take_buffers())
         }
 
         fn write(&mut self, packet: &mut AvPacket) -> Result<Bufs> {
-            self.begin_write();
+            self.begin_write()?;
             packet.write(&mut self.output)?;
             ffi::flush_output(&mut self.output)?;
             self.end_write();
@@ -665,7 +669,7 @@ pub(crate) mod private {
         }
 
         fn write_interleaved(&mut self, packet: &mut AvPacket) -> Result<Bufs> {
-            self.begin_write();
+            self.begin_write()?;
             packet.write_interleaved(&mut self.output)?;
             ffi::flush_output(&mut self.output)?;
             self.end_write();
@@ -673,7 +677,7 @@ pub(crate) mod private {
         }
 
         fn write_trailer(&mut self) -> Result<Bufs> {
-            self.begin_write();
+            self.begin_write()?;
             self.output.write_trailer()?;
             self.end_write();
             Ok(self.take_buffers())

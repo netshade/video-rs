@@ -701,8 +701,8 @@ impl Encoder {
         // Calculate frame duration based on frame rate and stream time base
         // duration = stream_tb.denominator / (frame_rate * stream_tb.numerator)
         let stream_tb = self.stream_time_base();
-        let frame_duration =
-            stream_tb.denominator() as i64 / (self.frame_rate as i64 * stream_tb.numerator() as i64);
+        let frame_duration = stream_tb.denominator() as i64
+            / (self.frame_rate as i64 * stream_tb.numerator() as i64);
         packet.set_duration(frame_duration);
 
         if self.interleaved {
